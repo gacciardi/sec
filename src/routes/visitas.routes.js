@@ -25,7 +25,8 @@ router.get("/", async (req, res) => {
       FROM visitas v
       LEFT JOIN clientes c ON c.id = v.cliente_id
       LEFT JOIN usuarios u ON u.id = v.vendedor_id
-      ORDER BY v.created_at DESC
+      WHERE v.fecha = CURRENT_DATE
+ORDER BY v.hora_llegada DESC
     `);
 
     res.json(result.rows);
