@@ -14,6 +14,7 @@ const coberturaRoutes = require("./routes/cobertura.routes");
 const pendientesRoutes = require("./routes/pendientes.routes");
 const mapaRoutes = require("./routes/mapa.routes");
 const dashboardRoutes = require("./routes/dashboard.routes");
+const configuracionRoutes = require("./routes/configuracion.routes");
 
 const app = express();
 
@@ -76,6 +77,8 @@ app.use("/pendientes", pendientesRoutes);
 app.use("/mapa", mapaRoutes);
 
 app.use("/dashboard", dashboardRoutes);
+
+app.use("/configuracion", configuracionRoutes);
 
 const PORT = process.env.PORT || 7890;
 
