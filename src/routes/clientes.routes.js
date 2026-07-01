@@ -5,7 +5,6 @@ const router = express.Router();
 
 function normalizarNumero(valor) {
   if (valor === null || valor === undefined || valor === "") return null;
-
   const numero = Number(String(valor).trim().replace(",", "."));
   return isNaN(numero) ? null : numero;
 }
@@ -28,9 +27,47 @@ function normalizarCoordenadas(lat, lng) {
   return { latitud, longitud };
 }
 
+/*
+=================================
+GET CLIENTES PAGINADO
+=================================
+*/
+
 router.get("/", async (req, res) => {
   try {
-    const result = await db.query(`
+    const buscar = String(req.query.buscar || "").trim();
+    const limit = Math.min(Number(req.query.limit || 50), 200);
+    const offset = Number(req.query.offset || 0);
+
+    let where = `WHERE c.deleted_at IS NULL`;
+    const params = [];
+
+    if (buscar) {
+      params.push(`%${buscar.toLowerCase()}%`);
+      where += `
+        AND (
+          LOWER(c.nombre) LIKE $${params.length}
+          OR LOWER(c.codigo_cliente) LIKE $${params.length}
+          OR LOWER(c.direccion) LIKE $${params.length}
+          OR LOWER(c.localidad) LIKE $${params.length}
+        )
+      `;
+    }
+
+    const totalResult = await db.query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM clientes c
+      ${where}
+      `,
+      params
+    );
+
+    params.push(limit);
+    params.push(offset);
+
+    const result = await db.query(
+      `
       SELECT
         c.id, c.codigo_cliente, c.nombre, c.direccion, c.localidad,
         c.latitud, c.longitud, c.radio_geocerca,
@@ -43,11 +80,21 @@ router.get("/", async (req, res) => {
       LEFT JOIN canales ca ON ca.id = c.canal_id
       LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
       LEFT JOIN usuarios u ON u.id = c.vendedor_id
-      WHERE c.deleted_at IS NULL
+      ${where}
       ORDER BY c.nombre
-    `);
+      LIMIT $${params.length - 1}
+      OFFSET $${params.length}
+      `,
+      params
+    );
 
-    res.json(result.rows);
+    res.json({
+      total: totalResult.rows[0].total,
+      limit,
+      offset,
+      clientes: result.rows
+    });
+
   } catch (error) {
     res.status(500).json({
       error: "Error al obtener clientes",
@@ -55,6 +102,12 @@ router.get("/", async (req, res) => {
     });
   }
 });
+
+/*
+=================================
+CLIENTES DEL VENDEDOR HOY
+=================================
+*/
 
 router.get("/vendedor/:vendedor_id/hoy", async (req, res) => {
   try {
@@ -91,6 +144,12 @@ router.get("/vendedor/:vendedor_id/hoy", async (req, res) => {
     });
   }
 });
+
+/*
+=================================
+CREAR CLIENTE
+=================================
+*/
 
 router.post("/", async (req, res) => {
   try {
@@ -153,6 +212,12 @@ router.post("/", async (req, res) => {
   }
 });
 
+/*
+=================================
+GET CLIENTE POR ID
+=================================
+*/
+
 router.get("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -178,6 +243,12 @@ router.get("/:id", async (req, res) => {
     });
   }
 });
+
+/*
+=================================
+ACTUALIZAR CLIENTE
+=================================
+*/
 
 router.put("/:id", async (req, res) => {
   try {
@@ -252,6 +323,12 @@ router.put("/:id", async (req, res) => {
     });
   }
 });
+
+/*
+=================================
+ELIMINAR CLIENTE
+=================================
+*/
 
 router.delete("/:id", async (req, res) => {
   try {
