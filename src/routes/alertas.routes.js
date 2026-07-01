@@ -5,16 +5,20 @@ const router = express.Router();
 
 /*
 =================================
-GET ALERTAS
+GET ALERTAS DEL DÍA
 =================================
 */
 
 router.get("/", async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT *
-      FROM alertas
-      ORDER BY fecha_hora DESC
+      SELECT
+        a.*,
+        u.nombre || ' ' || u.apellido AS vendedor
+      FROM alertas a
+      LEFT JOIN usuarios u ON u.id = a.vendedor_id
+      WHERE DATE(a.fecha_hora) = CURRENT_DATE
+      ORDER BY a.fecha_hora DESC
     `);
 
     res.json(result.rows);
@@ -35,14 +39,15 @@ POST ALERTA
 
 router.post("/", async (req, res) => {
   try {
-
     const {
       vendedor_id,
       cliente_id,
       visita_id,
       tipo,
       prioridad,
-      descripcion
+      descripcion,
+      latitud,
+      longitud
     } = req.body;
 
     const result = await db.query(
@@ -53,18 +58,23 @@ router.post("/", async (req, res) => {
         visita_id,
         tipo,
         prioridad,
-        descripcion
+        descripcion,
+        latitud,
+        longitud,
+        fecha_hora
       )
-      VALUES ($1,$2,$3,$4,$5,$6)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
       RETURNING *
       `,
       [
         vendedor_id || null,
         cliente_id || null,
         visita_id || null,
-        tipo,
-        prioridad,
-        descripcion
+        tipo || "INFO",
+        prioridad || "BAJA",
+        descripcion || "",
+        latitud || null,
+        longitud || null
       ]
     );
 
