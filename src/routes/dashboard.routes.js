@@ -46,6 +46,7 @@ router.get("/vendedores", async (req, res) => {
         SELECT fecha_hora
         FROM gps_logs
         WHERE vendedor_id = u.id
+          AND DATE(fecha_hora) = CURRENT_DATE
         ORDER BY fecha_hora DESC
         LIMIT 1
       ) lg ON true
@@ -111,6 +112,7 @@ router.get("/alertas-operativas", async (req, res) => {
         SELECT fecha_hora
         FROM gps_logs
         WHERE vendedor_id = u.id
+          AND DATE(fecha_hora) = CURRENT_DATE
         ORDER BY fecha_hora DESC
         LIMIT 1
       ) lg ON true
@@ -232,6 +234,7 @@ router.get("/vendedores/:id", async (req, res) => {
       SELECT latitud, longitud, fecha_hora
       FROM gps_logs
       WHERE vendedor_id = $1
+        AND DATE(fecha_hora) = CURRENT_DATE
       ORDER BY fecha_hora DESC
       LIMIT 1
       `,
