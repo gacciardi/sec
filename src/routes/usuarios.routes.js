@@ -6,7 +6,10 @@ const router = express.Router();
 router.get("/", async (req, res) => {
   try {
     const result = await db.query(`
-      SELECT id, nombre, apellido, email, rol, legajo, activo
+      SELECT
+        id, nombre, apellido, email, rol, legajo, activo,
+        hora_alerta_login,
+        alerta_login_activa
       FROM usuarios
       WHERE deleted_at IS NULL
       ORDER BY rol, apellido, nombre
@@ -23,7 +26,15 @@ router.get("/", async (req, res) => {
 
 router.post("/", async (req, res) => {
   try {
-    const { nombre, apellido, email, rol, legajo } = req.body;
+    const {
+      nombre,
+      apellido,
+      email,
+      rol,
+      legajo,
+      hora_alerta_login,
+      alerta_login_activa
+    } = req.body;
 
     const result = await db.query(
       `
@@ -33,9 +44,11 @@ router.post("/", async (req, res) => {
         email,
         rol,
         legajo,
-        activo
+        activo,
+        hora_alerta_login,
+        alerta_login_activa
       )
-      VALUES ($1,$2,$3,$4,$5,true)
+      VALUES ($1,$2,$3,$4,$5,true,$6,$7)
       RETURNING *
       `,
       [
@@ -43,7 +56,9 @@ router.post("/", async (req, res) => {
         apellido,
         email,
         rol || "VENDEDOR",
-        legajo || null
+        legajo || null,
+        hora_alerta_login || "08:45",
+        alerta_login_activa === undefined ? true : alerta_login_activa
       ]
     );
 
@@ -62,7 +77,17 @@ router.post("/", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, apellido, email, rol, legajo, activo } = req.body;
+
+    const {
+      nombre,
+      apellido,
+      email,
+      rol,
+      legajo,
+      activo,
+      hora_alerta_login,
+      alerta_login_activa
+    } = req.body;
 
     const result = await db.query(
       `
@@ -74,8 +99,10 @@ router.put("/:id", async (req, res) => {
         rol = $4,
         legajo = $5,
         activo = COALESCE($6::boolean, activo),
+        hora_alerta_login = COALESCE($7::time, hora_alerta_login),
+        alerta_login_activa = COALESCE($8::boolean, alerta_login_activa),
         updated_at = NOW()
-      WHERE id = $7 AND deleted_at IS NULL
+      WHERE id = $9 AND deleted_at IS NULL
       RETURNING *
       `,
       [
@@ -85,6 +112,8 @@ router.put("/:id", async (req, res) => {
         rol,
         legajo || null,
         activo === undefined ? null : activo,
+        hora_alerta_login || null,
+        alerta_login_activa === undefined ? null : alerta_login_activa,
         id
       ]
     );
