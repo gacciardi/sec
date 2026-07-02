@@ -84,4 +84,15 @@ const PORT = process.env.PORT || 7890;
 
 app.listen(PORT, () => {
   console.log("Servidor SEC iniciado en puerto " + PORT);
+
+  setInterval(async () => {
+  try {
+    await fetch("https://sec-backend-gg4j.onrender.com/alertas/control-login", {
+      method: "POST"
+    });
+  } catch (error) {
+    console.log("Control login pendiente:", error.message);
+  }
+}, 5 * 60 * 1000);
+
 });
