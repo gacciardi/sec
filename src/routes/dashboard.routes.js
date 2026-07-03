@@ -273,8 +273,14 @@ router.get("/vendedores/:id", async (req, res) => {
 
     const visitasResult = await db.query(
       `
-      SELECT v.id, c.nombre AS cliente, v.hora_llegada,
-             v.hora_salida, v.permanencia_segundos
+      SELECT
+    v.id,
+    c.nombre AS cliente,
+    v.hora_llegada,
+    v.hora_salida,
+    v.permanencia_segundos,
+    COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
+    COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
       FROM visitas v
       LEFT JOIN clientes c ON c.id = v.cliente_id
       WHERE v.vendedor_id = $1
