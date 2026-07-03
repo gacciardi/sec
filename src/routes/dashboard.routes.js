@@ -220,26 +220,24 @@ router.get("/alertas-operativas", async (req, res) => {
   }
 });
 
-router.get("/vendedores/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const vendedorResult = await db.query(
-      `SELECT id, nombre, apellido, legajo FROM usuarios WHERE id = $1`,
-      [id]
-    );
-
-    const gpsResult = await db.query(
-      `
-      SELECT latitud, longitud, fecha_hora
-      FROM gps_logs
-      WHERE vendedor_id = $1
-        AND DATE(fecha_hora) = CURRENT_DATE
-      ORDER BY fecha_hora DESC
-      LIMIT 1
-      `,
-      [id]
-    );
+onst visitasResult = await db.query(
+  `
+  SELECT
+    v.id,
+    c.nombre AS cliente,
+    v.hora_llegada,
+    v.hora_salida,
+    v.permanencia_segundos,
+    COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
+    COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
+  FROM visitas v
+  LEFT JOIN clientes c ON c.id = v.cliente_id
+  WHERE v.vendedor_id = $1
+    AND v.fecha = CURRENT_DATE
+  ORDER BY v.hora_llegada DESC
+  `,
+  [id]
+);
 
     const pendientesResult = await db.query(
       `
