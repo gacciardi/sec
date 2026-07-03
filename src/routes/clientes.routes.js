@@ -69,16 +69,28 @@ router.get("/", async (req, res) => {
     const result = await db.query(
       `
       SELECT
-        c.id, c.codigo_cliente, c.nombre, c.direccion, c.localidad,
-        c.latitud, c.longitud, c.radio_geocerca,
-        c.categoria, c.canal_id, c.frecuencia_id,
-        c.vendedor_id, c.activo,
+        c.id,
+        c.codigo_cliente,
+        c.nombre,
+        c.direccion,
+        c.localidad,
+        c.latitud,
+        c.longitud,
+        c.radio_geocerca,
+        c.categoria,
+        c.canal_id,
+        c.frecuencia_id,
+        c.vendedor_id,
+        c.ruta_id,
+        c.activo,
         ca.nombre AS canal,
         fr.nombre AS frecuencia,
+        r.nombre AS ruta,
         u.nombre || ' ' || u.apellido AS vendedor
       FROM clientes c
       LEFT JOIN canales ca ON ca.id = c.canal_id
       LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
+      LEFT JOIN rutas r ON r.id = c.ruta_id
       LEFT JOIN usuarios u ON u.id = c.vendedor_id
       ${where}
       ORDER BY c.nombre
@@ -113,18 +125,34 @@ router.get("/vendedor/:vendedor_id/hoy", async (req, res) => {
   try {
     const { vendedor_id } = req.params;
 
-    const result = await db.query(`
+    const result = await db.query(
+      `
       SELECT
-        c.id, c.codigo_cliente, c.nombre, c.direccion, c.localidad,
-        c.latitud, c.longitud,
+        c.id,
+        c.codigo_cliente,
+        c.nombre,
+        c.direccion,
+        c.localidad,
+        c.latitud,
+        c.longitud,
         ca.nombre AS canal,
-        fr.nombre AS frecuencia
+        fr.nombre AS frecuencia,
+        r.nombre AS ruta
       FROM clientes c
       LEFT JOIN canales ca ON ca.id = c.canal_id
       LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
+      LEFT JOIN rutas r ON r.id = c.ruta_id
       WHERE c.deleted_at IS NULL
         AND c.activo = true
-        AND c.vendedor_id = $1
+        AND (
+          c.ruta_id IN (
+            SELECT id
+            FROM rutas
+            WHERE vendedor_id = $1
+              AND activo = true
+          )
+          OR c.vendedor_id = $1
+        )
         AND (
           (EXTRACT(ISODOW FROM CURRENT_DATE)=1 AND fr.lunes=true)
           OR (EXTRACT(ISODOW FROM CURRENT_DATE)=2 AND fr.martes=true)
@@ -134,7 +162,9 @@ router.get("/vendedor/:vendedor_id/hoy", async (req, res) => {
           OR (EXTRACT(ISODOW FROM CURRENT_DATE)=6 AND fr.sabado=true)
         )
       ORDER BY c.nombre
-    `, [vendedor_id]);
+      `,
+      [vendedor_id]
+    );
 
     res.json(result.rows);
   } catch (error) {
@@ -164,6 +194,7 @@ router.post("/", async (req, res) => {
       canal_id,
       frecuencia_id,
       vendedor_id,
+      ruta_id,
       categoria
     } = req.body;
 
@@ -178,11 +209,20 @@ router.post("/", async (req, res) => {
     const result = await db.query(
       `
       INSERT INTO clientes (
-        codigo_cliente, nombre, direccion, localidad,
-        latitud, longitud, radio_geocerca,
-        canal_id, frecuencia_id, vendedor_id, categoria
+        codigo_cliente,
+        nombre,
+        direccion,
+        localidad,
+        latitud,
+        longitud,
+        radio_geocerca,
+        canal_id,
+        frecuencia_id,
+        vendedor_id,
+        ruta_id,
+        categoria
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       RETURNING *
       `,
       [
@@ -196,6 +236,7 @@ router.post("/", async (req, res) => {
         canal_id || null,
         frecuencia_id || null,
         vendedor_id || null,
+        ruta_id || null,
         categoria || null
       ]
     );
@@ -232,7 +273,9 @@ router.get("/:id", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Cliente no encontrado" });
+      return res.status(404).json({
+        error: "Cliente no encontrado"
+      });
     }
 
     res.json(result.rows[0]);
@@ -265,6 +308,7 @@ router.put("/:id", async (req, res) => {
       canal_id,
       frecuencia_id,
       vendedor_id,
+      ruta_id,
       categoria,
       activo
     } = req.body;
@@ -285,10 +329,11 @@ router.put("/:id", async (req, res) => {
         canal_id = $8,
         frecuencia_id = $9,
         vendedor_id = $10,
-        categoria = $11,
-        activo = COALESCE($12::boolean, activo),
+        ruta_id = $11,
+        categoria = $12,
+        activo = COALESCE($13::boolean, activo),
         updated_at = NOW()
-      WHERE id = $13 AND deleted_at IS NULL
+      WHERE id = $14 AND deleted_at IS NULL
       RETURNING *
       `,
       [
@@ -302,6 +347,7 @@ router.put("/:id", async (req, res) => {
         canal_id || null,
         frecuencia_id || null,
         vendedor_id || null,
+        ruta_id || null,
         categoria || null,
         activo === undefined ? null : activo,
         id
@@ -309,7 +355,9 @@ router.put("/:id", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Cliente no encontrado" });
+      return res.status(404).json({
+        error: "Cliente no encontrado"
+      });
     }
 
     res.json({
@@ -345,7 +393,9 @@ router.delete("/:id", async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Cliente no encontrado" });
+      return res.status(404).json({
+        error: "Cliente no encontrado"
+      });
     }
 
     res.json({
