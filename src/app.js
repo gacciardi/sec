@@ -1,13 +1,15 @@
 require("dotenv").config();
+
+const express = require("express");
+const cors = require("cors");
+const db = require("./config/database");
+
 const alertasRoutes = require("./routes/alertas.routes");
 const gpsLogsRoutes = require("./routes/gpslogs.routes");
 const visitasRoutes = require("./routes/visitas.routes");
 const clientesRoutes = require("./routes/clientes.routes");
 const frecuenciasRoutes = require("./routes/frecuencias.routes");
 const clientesImportRoutes = require("./routes/clientes-import.routes");
-const express = require("express");
-const cors = require("cors");
-const db = require("./config/database");
 const usuariosRoutes = require("./routes/usuarios.routes");
 const canalesRoutes = require("./routes/canales.routes");
 const coberturaRoutes = require("./routes/cobertura.routes");
@@ -15,11 +17,11 @@ const pendientesRoutes = require("./routes/pendientes.routes");
 const mapaRoutes = require("./routes/mapa.routes");
 const dashboardRoutes = require("./routes/dashboard.routes");
 const configuracionRoutes = require("./routes/configuracion.routes");
+const rutasRoutes = require("./routes/rutas.routes");
 
 const app = express();
 
 app.use(cors());
-
 app.use(express.json());
 
 console.log("APP.JS CARGADO");
@@ -59,26 +61,17 @@ app.get("/canales", async (req, res) => {
 });
 
 app.use("/frecuencias", frecuenciasRoutes);
-
 app.use("/clientes", clientesRoutes);
-
 app.use("/visitas", visitasRoutes);
-
 app.use("/gps-logs", gpsLogsRoutes);
-
 app.use("/alertas", alertasRoutes);
-
 app.use("/clientes/importar-excel", clientesImportRoutes);
-
 app.use("/cobertura", coberturaRoutes);
-
 app.use("/pendientes", pendientesRoutes);
-
 app.use("/mapa", mapaRoutes);
-
 app.use("/dashboard", dashboardRoutes);
-
 app.use("/configuracion", configuracionRoutes);
+app.use("/rutas", rutasRoutes);
 
 const PORT = process.env.PORT || 7890;
 
@@ -86,13 +79,18 @@ app.listen(PORT, () => {
   console.log("Servidor SEC iniciado en puerto " + PORT);
 
   setInterval(async () => {
-  try {
-    await fetch("https://sec-backend-gg4j.onrender.com/alertas/control-login", {
-      method: "POST"
-    });
-  } catch (error) {
-    console.log("Control login pendiente:", error.message);
-  }
-}, 5 * 60 * 1000);
-
+    try {
+      await fetch(
+        "https://sec-backend-gg4j.onrender.com/alertas/control-login",
+        {
+          method: "POST"
+        }
+      );
+    } catch (error) {
+      console.log(
+        "Control login pendiente:",
+        error.message
+      );
+    }
+  }, 5 * 60 * 1000);
 });
