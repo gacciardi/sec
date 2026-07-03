@@ -15,19 +15,12 @@ function valorCampo(fila, nombre) {
   const clave = Object.keys(fila).find(
     k => k.trim().toLowerCase() === nombre.toLowerCase()
   );
-
   return clave ? fila[clave] : null;
 }
 
 function normalizarNumero(valor) {
   if (valor === null || valor === undefined || valor === "") return null;
-
-  const numero = Number(
-    String(valor)
-      .trim()
-      .replace(",", ".")
-  );
-
+  const numero = Number(String(valor).trim().replace(",", "."));
   return isNaN(numero) ? null : numero;
 }
 
@@ -52,9 +45,7 @@ function normalizarCoordenadas(lat, lng) {
 router.post("/", upload.single("archivo"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({
-        error: "No se recibió archivo Excel"
-      });
+      return res.status(400).json({ error: "No se recibió archivo Excel" });
     }
 
     const workbook = XLSX.readFile(req.file.path);
@@ -66,6 +57,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
     let omitidos = 0;
     let sinCoordenadas = 0;
     let coordenadasInvertidas = 0;
+    let rutasCreadas = 0;
     const errores = [];
 
     for (let i = 0; i < filas.length; i++) {
@@ -77,12 +69,11 @@ router.post("/", upload.single("archivo"), async (req, res) => {
 
         if (!codigoCliente) {
           omitidos++;
-          errores.push({
-            fila: numeroFila,
-            motivo: "Sin codigo_cliente"
-          });
+          errores.push({ fila: numeroFila, motivo: "Sin codigo_cliente" });
           continue;
         }
+
+        const codigoNormalizado = String(codigoCliente).trim().replace(".0", "");
 
         const nombre = valorCampo(f, "nombre");
         const direccion = valorCampo(f, "direccion");
@@ -142,9 +133,43 @@ router.post("/", upload.single("archivo"), async (req, res) => {
           }
         }
 
+        let rutaId = null;
+        const rutaExcel = valorCampo(f, "ruta");
+
+        if (rutaExcel !== null && rutaExcel !== undefined && String(rutaExcel).trim() !== "") {
+          const rutaNombre = String(rutaExcel).trim().replace(".0", "");
+
+          let rutaResult = await db.query(
+            "SELECT id FROM rutas WHERE UPPER(nombre) = UPPER($1) LIMIT 1",
+            [rutaNombre]
+          );
+
+          if (rutaResult.rows.length === 0) {
+            rutaResult = await db.query(
+              `
+              INSERT INTO rutas (nombre)
+              VALUES ($1)
+              RETURNING id
+              `,
+              [rutaNombre]
+            );
+
+            rutasCreadas++;
+          }
+
+          rutaId = rutaResult.rows[0].id;
+        }
+
         const existente = await db.query(
-          "SELECT id FROM clientes WHERE codigo_cliente = $1 LIMIT 1",
-          [String(codigoCliente).trim()]
+          `
+          SELECT id
+          FROM clientes
+          WHERE codigo_cliente = $1
+            AND deleted_at IS NULL
+          ORDER BY updated_at DESC NULLS LAST, created_at DESC NULLS LAST
+          LIMIT 1
+          `,
+          [codigoNormalizado]
         );
 
         if (existente.rows.length > 0) {
@@ -161,8 +186,9 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               categoria = $7,
               frecuencia_id = $8,
               canal_id = $9,
+              ruta_id = $10,
               updated_at = NOW()
-            WHERE id = $10
+            WHERE id = $11
             `,
             [
               nombre,
@@ -174,6 +200,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               categoria,
               frecuenciaId,
               canalId,
+              rutaId,
               existente.rows[0].id
             ]
           );
@@ -192,12 +219,13 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               radio_geocerca,
               categoria,
               frecuencia_id,
-              canal_id
+              canal_id,
+              ruta_id
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
             `,
             [
-              String(codigoCliente).trim(),
+              codigoNormalizado,
               nombre,
               direccion,
               localidad || null,
@@ -206,7 +234,8 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               radioGeocerca,
               categoria,
               frecuenciaId,
-              canalId
+              canalId,
+              rutaId
             ]
           );
 
@@ -215,12 +244,10 @@ router.post("/", upload.single("archivo"), async (req, res) => {
 
       } catch (errorFila) {
         omitidos++;
-
         errores.push({
           fila: numeroFila,
           motivo: errorFila.message
         });
-
         console.error("ERROR EN FILA", numeroFila, errorFila.message);
       }
     }
@@ -233,6 +260,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
       omitidos,
       sinCoordenadas,
       coordenadasInvertidas,
+      rutasCreadas,
       errores
     });
 
