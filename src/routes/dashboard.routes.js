@@ -220,7 +220,7 @@ router.get("/alertas-operativas", async (req, res) => {
   }
 });
 
-onst visitasResult = await db.query(
+const visitasResult = await db.query(
   `
   SELECT
     v.id,
