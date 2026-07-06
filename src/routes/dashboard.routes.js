@@ -220,31 +220,42 @@ router.get("/alertas-operativas", async (req, res) => {
   }
 });
 
-const visitasResult = await db.query(
-  `
-  SELECT
-    v.id,
-    c.nombre AS cliente,
-    v.hora_llegada,
-    v.hora_salida,
-    v.permanencia_segundos,
-    COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
-    COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
-  FROM visitas v
-  LEFT JOIN clientes c ON c.id = v.cliente_id
-  WHERE v.vendedor_id = $1
-    AND v.fecha = CURRENT_DATE
-  ORDER BY v.hora_llegada DESC
-  `,
-  [id]
-);
+router.get("/vendedores/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const vendedorResult = await db.query(
+      `
+      SELECT id, nombre, apellido, legajo
+      FROM usuarios
+      WHERE id = $1
+      `,
+      [id]
+    );
+
+    const gpsResult = await db.query(
+      `
+      SELECT latitud, longitud, fecha_hora
+      FROM gps_logs
+      WHERE vendedor_id = $1
+        AND DATE(fecha_hora) = CURRENT_DATE
+      ORDER BY fecha_hora DESC
+      LIMIT 1
+      `,
+      [id]
+    );
 
     const pendientesResult = await db.query(
       `
-      SELECT c.id, c.codigo_cliente, c.nombre, c.direccion,
-             c.latitud, c.longitud,
-             ca.nombre AS canal,
-             fr.nombre AS frecuencia
+      SELECT
+        c.id,
+        c.codigo_cliente,
+        c.nombre,
+        c.direccion,
+        c.latitud,
+        c.longitud,
+        ca.nombre AS canal,
+        fr.nombre AS frecuencia
       FROM clientes c
       LEFT JOIN canales ca ON ca.id = c.canal_id
       LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
@@ -272,13 +283,13 @@ const visitasResult = await db.query(
     const visitasResult = await db.query(
       `
       SELECT
-    v.id,
-    c.nombre AS cliente,
-    v.hora_llegada,
-    v.hora_salida,
-    v.permanencia_segundos,
-    COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
-    COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
+        v.id,
+        c.nombre AS cliente,
+        v.hora_llegada,
+        v.hora_salida,
+        v.permanencia_segundos,
+        COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
+        COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
       FROM visitas v
       LEFT JOIN clientes c ON c.id = v.cliente_id
       WHERE v.vendedor_id = $1
@@ -294,6 +305,7 @@ const visitasResult = await db.query(
       pendientes: pendientesResult.rows,
       visitas: visitasResult.rows
     });
+
   } catch (error) {
     res.status(500).json({
       error: "Error al obtener detalle del vendedor",
