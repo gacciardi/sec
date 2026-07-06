@@ -18,6 +18,7 @@ const mapaRoutes = require("./routes/mapa.routes");
 const dashboardRoutes = require("./routes/dashboard.routes");
 const configuracionRoutes = require("./routes/configuracion.routes");
 const rutasRoutes = require("./routes/rutas.routes");
+const clientesExtraRoutes = require("./routes/clientes-extra.routes");
 
 const app = express();
 
@@ -37,6 +38,13 @@ db.query("SELECT NOW()")
 
 app.get("/", (req, res) => {
   res.send("SEC FUNCIONANDO");
+});
+
+app.get("/test-clientes-extra", (req, res) => {
+  res.json({
+    ok: true,
+    mensaje: "Clientes extra conectado"
+  });
 });
 
 app.get("/usuarios-test", (req, res) => {
@@ -72,6 +80,7 @@ app.use("/mapa", mapaRoutes);
 app.use("/dashboard", dashboardRoutes);
 app.use("/configuracion", configuracionRoutes);
 app.use("/rutas", rutasRoutes);
+app.use("/clientes-extra", clientesExtraRoutes);
 
 const PORT = process.env.PORT || 7890;
 
