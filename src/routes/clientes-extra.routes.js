@@ -92,4 +92,6 @@ router.get("/hoy/:vendedor_id", async (req, res) => {
   }
 });
 
+console.log("RUTA CLIENTES EXTRA CARGADA");
+
 module.exports = router;
