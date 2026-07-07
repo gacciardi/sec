@@ -14,16 +14,26 @@ const DIA_SQL = `
   )
 `;
 
+/*
+=================================
+DASHBOARD GENERAL VENDEDORES
+=================================
+*/
+
 router.get("/vendedores", async (req, res) => {
   try {
     const result = await db.query(`
       WITH clientes_dia AS (
+
         SELECT DISTINCT
           COALESCE(r.vendedor_id, c.vendedor_id) AS vendedor_id,
           c.id AS cliente_id
         FROM clientes c
-        LEFT JOIN rutas r ON r.id = c.ruta_id AND r.activo = true
-        LEFT JOIN frecuencias f ON f.id = c.frecuencia_id
+        LEFT JOIN rutas r
+          ON r.id = c.ruta_id
+          AND r.activo = true
+        LEFT JOIN frecuencias f
+          ON f.id = c.frecuencia_id
         WHERE c.deleted_at IS NULL
           AND c.activo = true
           AND COALESCE(r.vendedor_id, c.vendedor_id) IS NOT NULL
@@ -35,19 +45,25 @@ router.get("/vendedores", async (req, res) => {
           e.vendedor_id,
           e.cliente_id
         FROM clientes_extra_dia e
-        JOIN clientes c ON c.id = e.cliente_id
+        JOIN clientes c
+          ON c.id = e.cliente_id
         WHERE e.fecha = CURRENT_DATE
           AND e.activo = true
           AND c.deleted_at IS NULL
           AND c.activo = true
+
       ),
       programados AS (
-        SELECT vendedor_id, COUNT(DISTINCT cliente_id) AS programados
+        SELECT
+          vendedor_id,
+          COUNT(DISTINCT cliente_id) AS programados
         FROM clientes_dia
         GROUP BY vendedor_id
       ),
       visitados AS (
-        SELECT vendedor_id, COUNT(DISTINCT cliente_id) AS visitados
+        SELECT
+          vendedor_id,
+          COUNT(DISTINCT cliente_id) AS visitados
         FROM visitas
         WHERE fecha = CURRENT_DATE
         GROUP BY vendedor_id
@@ -62,8 +78,10 @@ router.get("/vendedores", async (req, res) => {
         va.hora_llegada AS llegada_actual,
         va.cliente_actual
       FROM usuarios u
-      LEFT JOIN programados p ON p.vendedor_id = u.id
-      LEFT JOIN visitados v ON v.vendedor_id = u.id
+      LEFT JOIN programados p
+        ON p.vendedor_id = u.id
+      LEFT JOIN visitados v
+        ON v.vendedor_id = u.id
       LEFT JOIN LATERAL (
         SELECT fecha_hora
         FROM gps_logs
@@ -73,13 +91,16 @@ router.get("/vendedores", async (req, res) => {
         LIMIT 1
       ) lg ON true
       LEFT JOIN LATERAL (
-        SELECT v.hora_llegada, c.nombre AS cliente_actual
-        FROM visitas v
-        LEFT JOIN clientes c ON c.id = v.cliente_id
-        WHERE v.vendedor_id = u.id
-          AND v.fecha = CURRENT_DATE
-          AND v.hora_salida IS NULL
-        ORDER BY v.hora_llegada DESC
+        SELECT
+          vi.hora_llegada,
+          c.nombre AS cliente_actual
+        FROM visitas vi
+        LEFT JOIN clientes c
+          ON c.id = vi.cliente_id
+        WHERE vi.vendedor_id = u.id
+          AND vi.fecha = CURRENT_DATE
+          AND vi.hora_salida IS NULL
+        ORDER BY vi.hora_llegada DESC
         LIMIT 1
       ) va ON true
       WHERE u.rol = 'VENDEDOR'
@@ -101,7 +122,7 @@ router.get("/vendedores", async (req, res) => {
         visitados,
         pendientes,
         cobertura: programados > 0
-          ? Number((Math.min((visitados / programados) * 100, 100)).toFixed(2))
+          ? Number(Math.min((visitados / programados) * 100, 100).toFixed(2))
           : 0,
         ultimo_gps: r.ultimo_gps,
         llegada_actual: r.llegada_actual,
@@ -119,16 +140,26 @@ router.get("/vendedores", async (req, res) => {
   }
 });
 
+/*
+=================================
+ALERTAS OPERATIVAS
+=================================
+*/
+
 router.get("/alertas-operativas", async (req, res) => {
   try {
     const result = await db.query(`
       WITH clientes_dia AS (
+
         SELECT DISTINCT
           COALESCE(r.vendedor_id, c.vendedor_id) AS vendedor_id,
           c.id AS cliente_id
         FROM clientes c
-        LEFT JOIN rutas r ON r.id = c.ruta_id AND r.activo = true
-        LEFT JOIN frecuencias f ON f.id = c.frecuencia_id
+        LEFT JOIN rutas r
+          ON r.id = c.ruta_id
+          AND r.activo = true
+        LEFT JOIN frecuencias f
+          ON f.id = c.frecuencia_id
         WHERE c.deleted_at IS NULL
           AND c.activo = true
           AND COALESCE(r.vendedor_id, c.vendedor_id) IS NOT NULL
@@ -140,25 +171,31 @@ router.get("/alertas-operativas", async (req, res) => {
           e.vendedor_id,
           e.cliente_id
         FROM clientes_extra_dia e
-        JOIN clientes c ON c.id = e.cliente_id
+        JOIN clientes c
+          ON c.id = e.cliente_id
         WHERE e.fecha = CURRENT_DATE
           AND e.activo = true
           AND c.deleted_at IS NULL
           AND c.activo = true
+
       ),
       programados AS (
-        SELECT vendedor_id, COUNT(DISTINCT cliente_id) AS programados
+        SELECT
+          vendedor_id,
+          COUNT(DISTINCT cliente_id) AS programados
         FROM clientes_dia
         GROUP BY vendedor_id
       ),
       visitados AS (
-        SELECT vendedor_id, COUNT(DISTINCT cliente_id) AS visitados
+        SELECT
+          vendedor_id,
+          COUNT(DISTINCT cliente_id) AS visitados
         FROM visitas
         WHERE fecha = CURRENT_DATE
         GROUP BY vendedor_id
       )
       SELECT
-        u.id,
+        u.id AS vendedor_id,
         u.nombre || ' ' || u.apellido AS vendedor,
         u.legajo,
         COALESCE(p.programados,0) AS programados,
@@ -167,8 +204,10 @@ router.get("/alertas-operativas", async (req, res) => {
         va.hora_llegada,
         va.cliente_actual
       FROM usuarios u
-      LEFT JOIN programados p ON p.vendedor_id = u.id
-      LEFT JOIN visitados v ON v.vendedor_id = u.id
+      LEFT JOIN programados p
+        ON p.vendedor_id = u.id
+      LEFT JOIN visitados v
+        ON v.vendedor_id = u.id
       LEFT JOIN LATERAL (
         SELECT fecha_hora
         FROM gps_logs
@@ -178,13 +217,16 @@ router.get("/alertas-operativas", async (req, res) => {
         LIMIT 1
       ) lg ON true
       LEFT JOIN LATERAL (
-        SELECT v.hora_llegada, c.nombre AS cliente_actual
-        FROM visitas v
-        LEFT JOIN clientes c ON c.id = v.cliente_id
-        WHERE v.vendedor_id = u.id
-          AND v.fecha = CURRENT_DATE
-          AND v.hora_salida IS NULL
-        ORDER BY v.hora_llegada DESC
+        SELECT
+          vi.hora_llegada,
+          c.nombre AS cliente_actual
+        FROM visitas vi
+        LEFT JOIN clientes c
+          ON c.id = vi.cliente_id
+        WHERE vi.vendedor_id = u.id
+          AND vi.fecha = CURRENT_DATE
+          AND vi.hora_salida IS NULL
+        ORDER BY vi.hora_llegada DESC
         LIMIT 1
       ) va ON true
       WHERE u.rol = 'VENDEDOR'
@@ -199,7 +241,9 @@ router.get("/alertas-operativas", async (req, res) => {
       const vendedor = `${r.vendedor} - Legajo ${r.legajo || ""}`;
       const programados = Number(r.programados || 0);
       const visitados = Number(r.visitados || 0);
-      const cobertura = programados > 0 ? (visitados / programados) * 100 : 0;
+      const cobertura = programados > 0
+        ? (visitados / programados) * 100
+        : 0;
 
       if (!r.ultimo_gps) {
         alertas.push({
@@ -209,6 +253,7 @@ router.get("/alertas-operativas", async (req, res) => {
         });
       } else {
         const minGps = Math.floor((ahora - new Date(r.ultimo_gps)) / 60000);
+
         if (minGps > 15) {
           alertas.push({
             tipo: "GPS_DEMORADO",
@@ -220,6 +265,7 @@ router.get("/alertas-operativas", async (req, res) => {
 
       if (r.hora_llegada) {
         const minCliente = Math.floor((ahora - new Date(r.hora_llegada)) / 60000);
+
         if (minCliente > 60) {
           alertas.push({
             tipo: "MUCHO_TIEMPO_CLIENTE",
@@ -256,6 +302,12 @@ router.get("/alertas-operativas", async (req, res) => {
   }
 });
 
+/*
+=================================
+DETALLE INDIVIDUAL VENDEDOR
+=================================
+*/
+
 router.get("/vendedores/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -271,7 +323,10 @@ router.get("/vendedores/:id", async (req, res) => {
 
     const gpsResult = await db.query(
       `
-      SELECT latitud, longitud, fecha_hora
+      SELECT
+        latitud,
+        longitud,
+        fecha_hora
       FROM gps_logs
       WHERE vendedor_id = $1
         AND DATE(fecha_hora) = CURRENT_DATE
@@ -281,74 +336,79 @@ router.get("/vendedores/:id", async (req, res) => {
       [id]
     );
 
-    const pendientesResult = await db.query(
+    const clientesDiaResult = await db.query(
       `
       WITH clientes_dia AS (
-        SELECT DISTINCT ON (id) *
-        FROM (
-          SELECT
-            c.id,
-            c.codigo_cliente,
-            c.nombre,
-            c.direccion,
-            c.localidad,
-            c.latitud,
-            c.longitud,
-            ca.nombre AS canal,
-            fr.nombre AS frecuencia,
-            r.nombre AS ruta,
-            NULL AS motivo,
-            1 AS orden
-          FROM clientes c
-          LEFT JOIN canales ca ON ca.id = c.canal_id
-          LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
-          LEFT JOIN rutas r ON r.id = c.ruta_id AND r.activo = true
-          WHERE c.deleted_at IS NULL
-            AND c.activo = true
-            AND (
-              r.vendedor_id = $1
-              OR c.vendedor_id = $1
-            )
-            AND ${DIA_SQL}
 
-          UNION ALL
+        SELECT DISTINCT ON (c.id)
+          c.id,
+          c.codigo_cliente,
+          c.nombre,
+          c.direccion,
+          c.localidad,
+          c.latitud,
+          c.longitud,
+          ca.nombre AS canal,
+          f.nombre AS frecuencia,
+          r.nombre AS ruta,
+          NULL::text AS motivo,
+          1 AS prioridad_origen
+        FROM clientes c
+        LEFT JOIN canales ca
+          ON ca.id = c.canal_id
+        LEFT JOIN frecuencias f
+          ON f.id = c.frecuencia_id
+        LEFT JOIN rutas r
+          ON r.id = c.ruta_id
+          AND r.activo = true
+        WHERE c.deleted_at IS NULL
+          AND c.activo = true
+          AND (
+            r.vendedor_id = $1
+            OR c.vendedor_id = $1
+          )
+          AND ${DIA_SQL}
 
-          SELECT
-            c.id,
-            c.codigo_cliente,
-            c.nombre,
-            c.direccion,
-            c.localidad,
-            c.latitud,
-            c.longitud,
-            ca.nombre AS canal,
-            fr.nombre AS frecuencia,
-            r.nombre AS ruta,
-            e.motivo,
-            0 AS orden
-          FROM clientes_extra_dia e
-          JOIN clientes c ON c.id = e.cliente_id
-          LEFT JOIN canales ca ON ca.id = c.canal_id
-          LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
-          LEFT JOIN rutas r ON r.id = e.ruta_id
-          WHERE e.vendedor_id = $1
-            AND e.fecha = CURRENT_DATE
-            AND e.activo = true
-            AND c.deleted_at IS NULL
-            AND c.activo = true
-        ) x
-        ORDER BY id, orden
+        UNION ALL
+
+        SELECT DISTINCT ON (c.id)
+          c.id,
+          c.codigo_cliente,
+          c.nombre,
+          c.direccion,
+          c.localidad,
+          c.latitud,
+          c.longitud,
+          ca.nombre AS canal,
+          f.nombre AS frecuencia,
+          r.nombre AS ruta,
+          e.motivo,
+          0 AS prioridad_origen
+        FROM clientes_extra_dia e
+        JOIN clientes c
+          ON c.id = e.cliente_id
+        LEFT JOIN canales ca
+          ON ca.id = c.canal_id
+        LEFT JOIN frecuencias f
+          ON f.id = c.frecuencia_id
+        LEFT JOIN rutas r
+          ON r.id = e.ruta_id
+        WHERE e.vendedor_id = $1
+          AND e.fecha = CURRENT_DATE
+          AND e.activo = true
+          AND c.deleted_at IS NULL
+          AND c.activo = true
+
+      ),
+      unificados AS (
+        SELECT DISTINCT ON (id)
+          *
+        FROM clientes_dia
+        ORDER BY id, prioridad_origen
       )
       SELECT *
-      FROM clientes_dia cd
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM visitas v
-        WHERE v.cliente_id = cd.id
-          AND v.vendedor_id = $1
-          AND v.fecha = CURRENT_DATE
-      )
-      ORDER BY cd.nombre
+      FROM unificados
+      ORDER BY nombre
       `,
       [id]
     );
@@ -368,7 +428,8 @@ router.get("/vendedores/:id", async (req, res) => {
         COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
         COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
       FROM visitas v
-      LEFT JOIN clientes c ON c.id = v.cliente_id
+      LEFT JOIN clientes c
+        ON c.id = v.cliente_id
       WHERE v.vendedor_id = $1
         AND v.fecha = CURRENT_DATE
       ORDER BY v.hora_llegada DESC
@@ -376,10 +437,20 @@ router.get("/vendedores/:id", async (req, res) => {
       [id]
     );
 
+    const visitadosIds = new Set(
+      visitasResult.rows
+        .filter(v => v.cliente_id)
+        .map(v => String(v.cliente_id))
+    );
+
+    const pendientes = clientesDiaResult.rows.filter(c =>
+      !visitadosIds.has(String(c.id))
+    );
+
     res.json({
-      vendedor: vendedorResult.rows[0],
+      vendedor: vendedorResult.rows[0] || null,
       ultimo_gps: gpsResult.rows[0] || null,
-      pendientes: pendientesResult.rows,
+      pendientes,
       visitas: visitasResult.rows
     });
 
