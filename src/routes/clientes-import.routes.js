@@ -55,10 +55,14 @@ router.post("/", upload.single("archivo"), async (req, res) => {
     let importados = 0;
     let actualizados = 0;
     let omitidos = 0;
+    let suspendidos = 0;
+    let reactivados = 0;
     let sinCoordenadas = 0;
     let coordenadasInvertidas = 0;
     let rutasCreadas = 0;
+
     const errores = [];
+    const codigosImportados = [];
 
     for (let i = 0; i < filas.length; i++) {
       const f = filas[i];
@@ -74,6 +78,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
         }
 
         const codigoNormalizado = String(codigoCliente).trim().replace(".0", "");
+        codigosImportados.push(codigoNormalizado);
 
         const nombre = valorCampo(f, "nombre");
         const direccion = valorCampo(f, "direccion");
@@ -162,7 +167,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
 
         const existente = await db.query(
           `
-          SELECT id
+          SELECT id, activo
           FROM clientes
           WHERE codigo_cliente = $1
             AND deleted_at IS NULL
@@ -173,6 +178,10 @@ router.post("/", upload.single("archivo"), async (req, res) => {
         );
 
         if (existente.rows.length > 0) {
+          if (existente.rows[0].activo === false) {
+            reactivados++;
+          }
+
           await db.query(
             `
             UPDATE clientes
@@ -187,6 +196,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               frecuencia_id = $8,
               canal_id = $9,
               ruta_id = $10,
+              activo = true,
               updated_at = NOW()
             WHERE id = $11
             `,
@@ -220,9 +230,10 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               categoria,
               frecuencia_id,
               canal_id,
-              ruta_id
+              ruta_id,
+              activo
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true)
             `,
             [
               codigoNormalizado,
@@ -252,11 +263,31 @@ router.post("/", upload.single("archivo"), async (req, res) => {
       }
     }
 
+    if (codigosImportados.length > 0) {
+      const suspendidosResult = await db.query(
+        `
+        UPDATE clientes
+        SET
+          activo = false,
+          updated_at = NOW()
+        WHERE deleted_at IS NULL
+          AND activo = true
+          AND codigo_cliente <> ALL($1::text[])
+        RETURNING id
+        `,
+        [codigosImportados]
+      );
+
+      suspendidos = suspendidosResult.rows.length;
+    }
+
     res.json({
       mensaje: "Importación finalizada",
       filas: filas.length,
       importados,
       actualizados,
+      reactivados,
+      suspendidos,
       omitidos,
       sinCoordenadas,
       coordenadasInvertidas,
