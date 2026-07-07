@@ -7,12 +7,14 @@ router.get("/vendedores", async (req, res) => {
   try {
     const result = await db.query(`
       WITH programados AS (
-        SELECT c.vendedor_id, COUNT(*) AS programados
+        SELECT r.vendedor_id, COUNT(*) AS programados
         FROM clientes c
         JOIN frecuencias f ON f.id = c.frecuencia_id
+        JOIN rutas r ON r.id = c.ruta_id
         WHERE c.deleted_at IS NULL
           AND c.activo = true
-          AND c.vendedor_id IS NOT NULL
+          AND r.vendedor_id IS NOT NULL
+          AND r.activo = true
           AND (
             (EXTRACT(ISODOW FROM CURRENT_DATE)=1 AND f.lunes=true)
             OR (EXTRACT(ISODOW FROM CURRENT_DATE)=2 AND f.martes=true)
@@ -21,7 +23,7 @@ router.get("/vendedores", async (req, res) => {
             OR (EXTRACT(ISODOW FROM CURRENT_DATE)=5 AND f.viernes=true)
             OR (EXTRACT(ISODOW FROM CURRENT_DATE)=6 AND f.sabado=true)
           )
-        GROUP BY c.vendedor_id
+        GROUP BY r.vendedor_id
       ),
       visitados AS (
         SELECT vendedor_id, COUNT(DISTINCT cliente_id) AS visitados
@@ -77,9 +79,7 @@ router.get("/vendedores", async (req, res) => {
         programados,
         visitados,
         pendientes: Number(r.pendientes),
-        cobertura: programados > 0
-          ? Number(((visitados / programados) * 100).toFixed(2))
-          : 0,
+        cobertura: programados > 0 ? Number(((visitados / programados) * 100).toFixed(2)) : 0,
         ultimo_gps: r.ultimo_gps,
         llegada_actual: r.llegada_actual,
         cliente_actual: r.cliente_actual
@@ -130,7 +130,9 @@ router.get("/alertas-operativas", async (req, res) => {
         SELECT COUNT(*) AS programados
         FROM clientes c
         JOIN frecuencias f ON f.id = c.frecuencia_id
-        WHERE c.vendedor_id = u.id
+        JOIN rutas r ON r.id = c.ruta_id
+        WHERE r.vendedor_id = u.id
+          AND r.activo = true
           AND c.deleted_at IS NULL
           AND c.activo = true
           AND (
@@ -163,51 +165,27 @@ router.get("/alertas-operativas", async (req, res) => {
       const cobertura = programados > 0 ? (visitados / programados) * 100 : 0;
 
       if (!r.ultimo_gps) {
-        alertas.push({
-          tipo: "SIN_GPS",
-          prioridad: "ALTA",
-          descripcion: `${vendedor} no reportó GPS hoy`
-        });
+        alertas.push({ tipo: "SIN_GPS", prioridad: "ALTA", descripcion: `${vendedor} no reportó GPS hoy` });
       } else {
         const minGps = Math.floor((ahora - new Date(r.ultimo_gps)) / 60000);
-
         if (minGps > 15) {
-          alertas.push({
-            tipo: "GPS_DEMORADO",
-            prioridad: "ALTA",
-            descripcion: `${vendedor} no reporta GPS hace ${minGps} minutos`
-          });
+          alertas.push({ tipo: "GPS_DEMORADO", prioridad: "ALTA", descripcion: `${vendedor} no reporta GPS hace ${minGps} minutos` });
         }
       }
 
       if (r.hora_llegada) {
         const minCliente = Math.floor((ahora - new Date(r.hora_llegada)) / 60000);
-
         if (minCliente > 60) {
-          alertas.push({
-            tipo: "MUCHO_TIEMPO_CLIENTE",
-            prioridad: "MEDIA",
-            descripcion: `${vendedor} lleva ${minCliente} minutos en ${r.cliente_actual}`
-          });
+          alertas.push({ tipo: "MUCHO_TIEMPO_CLIENTE", prioridad: "MEDIA", descripcion: `${vendedor} lleva ${minCliente} minutos en ${r.cliente_actual}` });
         }
       }
 
       if (programados > 0 && visitados === 0) {
-        alertas.push({
-          tipo: "SIN_VISITAS",
-          prioridad: "MEDIA",
-          descripcion: `${vendedor} todavía no registró visitas`
-        });
+        alertas.push({ tipo: "SIN_VISITAS", prioridad: "MEDIA", descripcion: `${vendedor} todavía no registró visitas` });
       }
 
-      const horaActual = ahora.getHours();
-
-      if (horaActual >= 14 && programados > 0 && cobertura < 30) {
-        alertas.push({
-          tipo: "BAJA_COBERTURA",
-          prioridad: "ALTA",
-          descripcion: `${vendedor} tiene cobertura baja: ${cobertura.toFixed(1)}%`
-        });
+      if (ahora.getHours() >= 14 && programados > 0 && cobertura < 30) {
+        alertas.push({ tipo: "BAJA_COBERTURA", prioridad: "ALTA", descripcion: `${vendedor} tiene cobertura baja: ${cobertura.toFixed(1)}%` });
       }
     });
 
@@ -225,11 +203,7 @@ router.get("/vendedores/:id", async (req, res) => {
     const { id } = req.params;
 
     const vendedorResult = await db.query(
-      `
-      SELECT id, nombre, apellido, legajo
-      FROM usuarios
-      WHERE id = $1
-      `,
+      `SELECT id, nombre, apellido, legajo FROM usuarios WHERE id = $1`,
       [id]
     );
 
@@ -255,17 +229,25 @@ router.get("/vendedores/:id", async (req, res) => {
         c.latitud,
         c.longitud,
         ca.nombre AS canal,
-        fr.nombre AS frecuencia
+        fr.nombre AS frecuencia,
+        r.nombre AS ruta
       FROM clientes c
       LEFT JOIN canales ca ON ca.id = c.canal_id
       LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
-      WHERE c.vendedor_id = $1
-        AND c.deleted_at IS NULL
+      LEFT JOIN rutas r ON r.id = c.ruta_id
+      WHERE c.deleted_at IS NULL
         AND c.activo = true
+        AND (
+          c.ruta_id IN (
+            SELECT id FROM rutas WHERE vendedor_id = $1 AND activo = true
+          )
+          OR c.vendedor_id = $1
+        )
         AND c.id NOT IN (
           SELECT DISTINCT cliente_id
           FROM visitas
           WHERE fecha = CURRENT_DATE
+            AND vendedor_id = $1
         )
         AND (
           (EXTRACT(ISODOW FROM CURRENT_DATE)=1 AND fr.lunes=true)
@@ -274,13 +256,38 @@ router.get("/vendedores/:id", async (req, res) => {
           OR (EXTRACT(ISODOW FROM CURRENT_DATE)=4 AND fr.jueves=true)
           OR (EXTRACT(ISODOW FROM CURRENT_DATE)=5 AND fr.viernes=true)
           OR (EXTRACT(ISODOW FROM CURRENT_DATE)=6 AND fr.sabado=true)
+          OR c.id IN (
+            SELECT cliente_id
+            FROM clientes_extra_dia
+            WHERE vendedor_id = $1
+              AND fecha = CURRENT_DATE
+              AND activo = true
+          )
         )
       ORDER BY c.nombre
       `,
       [id]
     );
 
-    
+    const visitasResult = await db.query(
+      `
+      SELECT
+        v.id,
+        c.nombre AS cliente,
+        v.hora_llegada,
+        v.hora_salida,
+        v.permanencia_segundos,
+        COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
+        COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
+      FROM visitas v
+      LEFT JOIN clientes c ON c.id = v.cliente_id
+      WHERE v.vendedor_id = $1
+        AND v.fecha = CURRENT_DATE
+      ORDER BY v.hora_llegada DESC
+      `,
+      [id]
+    );
+
     res.json({
       vendedor: vendedorResult.rows[0],
       ultimo_gps: gpsResult.rows[0] || null,
