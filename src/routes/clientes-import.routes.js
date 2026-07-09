@@ -18,6 +18,17 @@ function valorCampo(fila, nombre) {
   return clave ? fila[clave] : null;
 }
 
+function limpiarTexto(valor) {
+  if (valor === null || valor === undefined) return null;
+  const txt = String(valor).trim();
+  return txt === "" ? null : txt;
+}
+
+function normalizarCodigo(valor) {
+  if (valor === null || valor === undefined || valor === "") return null;
+  return String(valor).trim().replace(".0", "");
+}
+
 function normalizarNumero(valor) {
   if (valor === null || valor === undefined || valor === "") return null;
   const numero = Number(String(valor).trim().replace(",", "."));
@@ -54,6 +65,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
 
     let importados = 0;
     let actualizados = 0;
+    let sinCambios = 0;
     let omitidos = 0;
     let suspendidos = 0;
     let reactivados = 0;
@@ -69,20 +81,19 @@ router.post("/", upload.single("archivo"), async (req, res) => {
       const numeroFila = i + 2;
 
       try {
-        const codigoCliente = valorCampo(f, "codigo_cliente");
+        const codigoNormalizado = normalizarCodigo(valorCampo(f, "codigo_cliente"));
 
-        if (!codigoCliente) {
+        if (!codigoNormalizado) {
           omitidos++;
           errores.push({ fila: numeroFila, motivo: "Sin codigo_cliente" });
           continue;
         }
 
-        const codigoNormalizado = String(codigoCliente).trim().replace(".0", "");
         codigosImportados.push(codigoNormalizado);
 
-        const nombre = valorCampo(f, "nombre");
-        const direccion = valorCampo(f, "direccion");
-        const localidad = valorCampo(f, "localidad");
+        const nombre = limpiarTexto(valorCampo(f, "nombre"));
+        const direccion = limpiarTexto(valorCampo(f, "direccion"));
+        const localidad = limpiarTexto(valorCampo(f, "localidad"));
 
         const latOriginal = valorCampo(f, "latitud");
         const lngOriginal = valorCampo(f, "longitud");
@@ -105,44 +116,36 @@ router.post("/", upload.single("archivo"), async (req, res) => {
           sinCoordenadas++;
         }
 
-        const radioGeocerca =
-          normalizarNumero(valorCampo(f, "radio_geocerca")) || 30;
-
+        const radioGeocerca = 30;
         const categoria = normalizarCategoria(valorCampo(f, "categoria"));
 
         let frecuenciaId = null;
-        const frecuenciaExcel = valorCampo(f, "frecuencia");
+        const frecuenciaExcel = limpiarTexto(valorCampo(f, "frecuencia"));
 
         if (frecuenciaExcel) {
           const frecuenciaResult = await db.query(
             "SELECT id FROM frecuencias WHERE UPPER(nombre) = UPPER($1) LIMIT 1",
-            [String(frecuenciaExcel).trim()]
+            [frecuenciaExcel]
           );
-
-          if (frecuenciaResult.rows.length > 0) {
-            frecuenciaId = frecuenciaResult.rows[0].id;
-          }
+          if (frecuenciaResult.rows.length > 0) frecuenciaId = frecuenciaResult.rows[0].id;
         }
 
         let canalId = null;
-        const canalExcel = valorCampo(f, "canal");
+        const canalExcel = limpiarTexto(valorCampo(f, "canal"));
 
         if (canalExcel) {
           const canalResult = await db.query(
             "SELECT id FROM canales WHERE UPPER(nombre) = UPPER($1) LIMIT 1",
-            [String(canalExcel).trim()]
+            [canalExcel]
           );
-
-          if (canalResult.rows.length > 0) {
-            canalId = canalResult.rows[0].id;
-          }
+          if (canalResult.rows.length > 0) canalId = canalResult.rows[0].id;
         }
 
         let rutaId = null;
-        const rutaExcel = valorCampo(f, "ruta");
+        const rutaExcel = limpiarTexto(valorCampo(f, "ruta"));
 
-        if (rutaExcel !== null && rutaExcel !== undefined && String(rutaExcel).trim() !== "") {
-          const rutaNombre = String(rutaExcel).trim().replace(".0", "");
+        if (rutaExcel) {
+          const rutaNombre = rutaExcel.replace(".0", "");
 
           let rutaResult = await db.query(
             "SELECT id FROM rutas WHERE UPPER(nombre) = UPPER($1) LIMIT 1",
@@ -158,7 +161,6 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               `,
               [rutaNombre]
             );
-
             rutasCreadas++;
           }
 
@@ -167,7 +169,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
 
         const existente = await db.query(
           `
-          SELECT id, activo
+          SELECT *
           FROM clientes
           WHERE codigo_cliente = $1
             AND deleted_at IS NULL
@@ -178,44 +180,86 @@ router.post("/", upload.single("archivo"), async (req, res) => {
         );
 
         if (existente.rows.length > 0) {
-          if (existente.rows[0].activo === false) {
-            reactivados++;
-          }
+          const c = existente.rows[0];
 
-          await db.query(
+          if (c.activo === false) reactivados++;
+
+          const result = await db.query(
             `
             UPDATE clientes
             SET
-              nombre = $1,
-              direccion = $2,
-              localidad = $3,
-              latitud = $4,
-              longitud = $5,
-              radio_geocerca = $6,
-              categoria = $7,
-              frecuencia_id = $8,
-              canal_id = $9,
-              ruta_id = $10,
+              nombre = COALESCE($1, nombre),
+              direccion = COALESCE($2, direccion),
+              localidad = COALESCE($3, localidad),
+              latitud = COALESCE($4, latitud),
+              longitud = COALESCE($5, longitud),
+              radio_geocerca = 30,
+              categoria = COALESCE($6, categoria),
+              frecuencia_id = COALESCE($7, frecuencia_id),
+              canal_id = COALESCE($8, canal_id),
+              ruta_id = COALESCE($9, ruta_id),
               activo = true,
-              updated_at = NOW()
-            WHERE id = $11
+              updated_at = CASE
+                WHEN
+                  nombre IS DISTINCT FROM COALESCE($1, nombre)
+                  OR direccion IS DISTINCT FROM COALESCE($2, direccion)
+                  OR localidad IS DISTINCT FROM COALESCE($3, localidad)
+                  OR latitud IS DISTINCT FROM COALESCE($4, latitud)
+                  OR longitud IS DISTINCT FROM COALESCE($5, longitud)
+                  OR radio_geocerca IS DISTINCT FROM 30
+                  OR categoria IS DISTINCT FROM COALESCE($6, categoria)
+                  OR frecuencia_id IS DISTINCT FROM COALESCE($7, frecuencia_id)
+                  OR canal_id IS DISTINCT FROM COALESCE($8, canal_id)
+                  OR ruta_id IS DISTINCT FROM COALESCE($9, ruta_id)
+                  OR activo IS DISTINCT FROM true
+                THEN NOW()
+                ELSE updated_at
+              END
+            WHERE id = $10
+            RETURNING
+              (
+                nombre IS DISTINCT FROM $11
+                OR direccion IS DISTINCT FROM $12
+                OR localidad IS DISTINCT FROM $13
+                OR latitud IS DISTINCT FROM $14
+                OR longitud IS DISTINCT FROM $15
+                OR radio_geocerca IS DISTINCT FROM $16
+                OR categoria IS DISTINCT FROM $17
+                OR frecuencia_id IS DISTINCT FROM $18
+                OR canal_id IS DISTINCT FROM $19
+                OR ruta_id IS DISTINCT FROM $20
+                OR activo IS DISTINCT FROM $21
+              ) AS cambio
             `,
             [
               nombre,
               direccion,
-              localidad || null,
+              localidad,
               coords.latitud,
               coords.longitud,
-              radioGeocerca,
               categoria,
               frecuenciaId,
               canalId,
               rutaId,
-              existente.rows[0].id
+              c.id,
+
+              c.nombre,
+              c.direccion,
+              c.localidad,
+              c.latitud,
+              c.longitud,
+              c.radio_geocerca,
+              c.categoria,
+              c.frecuencia_id,
+              c.canal_id,
+              c.ruta_id,
+              c.activo
             ]
           );
 
-          actualizados++;
+          if (result.rows[0]?.cambio) actualizados++;
+          else sinCambios++;
+
         } else {
           await db.query(
             `
@@ -233,16 +277,15 @@ router.post("/", upload.single("archivo"), async (req, res) => {
               ruta_id,
               activo
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true)
+            VALUES ($1,$2,$3,$4,$5,$6,30,$7,$8,$9,$10,true)
             `,
             [
               codigoNormalizado,
               nombre,
               direccion,
-              localidad || null,
+              localidad,
               coords.latitud,
               coords.longitud,
-              radioGeocerca,
               categoria,
               frecuenciaId,
               canalId,
@@ -267,9 +310,8 @@ router.post("/", upload.single("archivo"), async (req, res) => {
       const suspendidosResult = await db.query(
         `
         UPDATE clientes
-        SET
-          activo = false,
-          updated_at = NOW()
+        SET activo = false,
+            updated_at = NOW()
         WHERE deleted_at IS NULL
           AND activo = true
           AND codigo_cliente <> ALL($1::text[])
@@ -286,6 +328,7 @@ router.post("/", upload.single("archivo"), async (req, res) => {
       filas: filas.length,
       importados,
       actualizados,
+      sinCambios,
       reactivados,
       suspendidos,
       omitidos,
