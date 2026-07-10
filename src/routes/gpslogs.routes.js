@@ -19,10 +19,179 @@ function distanciaMetros(lat1, lon1, lat2, lon2) {
   const a =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1 * rad) *
-    Math.cos(lat2 * rad) *
-    Math.sin(dLon / 2) ** 2;
+      Math.cos(lat2 * rad) *
+      Math.sin(dLon / 2) ** 2;
 
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function numeroValido(valor) {
+  const numero = Number(valor);
+  return Number.isFinite(numero) ? numero : null;
+}
+
+async function obtenerClientesAsignados(vendedorId) {
+  const result = await db.query(
+    `
+    SELECT DISTINCT
+      c.id,
+      c.codigo_cliente,
+      c.nombre,
+      c.direccion,
+      c.localidad,
+      c.latitud,
+      c.longitud,
+      COALESCE(c.radio_geocerca, 30) AS radio_geocerca
+    FROM clientes c
+    LEFT JOIN rutas r ON r.id = c.ruta_id
+    WHERE c.deleted_at IS NULL
+      AND c.activo = true
+      AND c.latitud IS NOT NULL
+      AND c.longitud IS NOT NULL
+      AND c.latitud <> 0
+      AND c.longitud <> 0
+      AND (
+        c.vendedor_id = $1
+        OR (
+          r.vendedor_id = $1
+          AND r.activo = true
+        )
+      )
+    `,
+    [vendedorId]
+  );
+
+  return result.rows;
+}
+
+function obtenerCandidatos(clientes, latActual, lngActual) {
+  return clientes
+    .map(cliente => {
+      const latCliente = numeroValido(cliente.latitud);
+      const lngCliente = numeroValido(cliente.longitud);
+
+      if (latCliente === null || lngCliente === null) {
+        return null;
+      }
+
+      const distancia = distanciaMetros(
+        latActual,
+        lngActual,
+        latCliente,
+        lngCliente
+      );
+
+      const radioGeocerca =
+        numeroValido(cliente.radio_geocerca) || 30;
+
+      if (distancia > radioGeocerca) {
+        return null;
+      }
+
+      return {
+        id: cliente.id,
+        codigo_cliente: cliente.codigo_cliente,
+        nombre: cliente.nombre,
+        direccion: cliente.direccion,
+        localidad: cliente.localidad,
+        latitud: latCliente,
+        longitud: lngCliente,
+        distancia_metros: Math.round(distancia),
+        radio_geocerca: radioGeocerca
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.distancia_metros - b.distancia_metros);
+}
+
+async function obtenerVisitaAbierta(vendedorId) {
+  const result = await db.query(
+    `
+    SELECT
+      v.id,
+      v.cliente_id,
+      v.hora_llegada,
+      c.nombre AS cliente,
+      c.latitud,
+      c.longitud,
+      COALESCE(c.radio_geocerca, 30) AS radio_geocerca
+    FROM visitas v
+    INNER JOIN clientes c ON c.id = v.cliente_id
+    WHERE v.vendedor_id = $1
+      AND v.fecha = CURRENT_DATE
+      AND v.hora_salida IS NULL
+    ORDER BY v.hora_llegada DESC
+    LIMIT 1
+    `,
+    [vendedorId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function cerrarVisita(visitaId, latitud, longitud) {
+  const result = await db.query(
+    `
+    UPDATE visitas
+    SET
+      hora_salida = NOW(),
+      permanencia_segundos =
+        GREATEST(
+          0,
+          EXTRACT(EPOCH FROM (NOW() - hora_llegada))::INTEGER
+        ),
+      latitud_salida = COALESCE($2, latitud_salida),
+      longitud_salida = COALESCE($3, longitud_salida)
+    WHERE id = $1
+      AND hora_salida IS NULL
+    RETURNING *
+    `,
+    [visitaId, latitud, longitud]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function abrirVisita(
+  vendedorId,
+  clienteId,
+  latitud,
+  longitud
+) {
+  const existente = await db.query(
+    `
+    SELECT *
+    FROM visitas
+    WHERE vendedor_id = $1
+      AND cliente_id = $2
+      AND fecha = CURRENT_DATE
+      AND hora_salida IS NULL
+    LIMIT 1
+    `,
+    [vendedorId, clienteId]
+  );
+
+  if (existente.rows.length > 0) {
+    return existente.rows[0];
+  }
+
+  const result = await db.query(
+    `
+    INSERT INTO visitas (
+      cliente_id,
+      vendedor_id,
+      fecha,
+      hora_llegada,
+      latitud_llegada,
+      longitud_llegada
+    )
+    VALUES ($1,$2,CURRENT_DATE,NOW(),$3,$4)
+    RETURNING *
+    `,
+    [clienteId, vendedorId, latitud, longitud]
+  );
+
+  return result.rows[0];
 }
 
 /*
@@ -170,21 +339,129 @@ router.post("/", async (req, res) => {
 
 /*
 =================================
+CONFIRMAR CLIENTE ENTRE VARIOS
+=================================
+*/
+
+router.post("/automatico/confirmar-cliente", async (req, res) => {
+  try {
+    const {
+      vendedor_id,
+      cliente_id,
+      latitud,
+      longitud
+    } = req.body;
+
+    const latActual = numeroValido(latitud);
+    const lngActual = numeroValido(longitud);
+
+    if (
+      !vendedor_id ||
+      !cliente_id ||
+      latActual === null ||
+      lngActual === null ||
+      latActual === 0 ||
+      lngActual === 0
+    ) {
+      return res.status(400).json({
+        error: "Datos inválidos para confirmar el cliente"
+      });
+    }
+
+    const clientes = await obtenerClientesAsignados(vendedor_id);
+    const cliente = clientes.find(c => c.id === cliente_id);
+
+    if (!cliente) {
+      return res.status(404).json({
+        error: "El cliente no está activo o no pertenece al vendedor"
+      });
+    }
+
+    const distancia = distanciaMetros(
+      latActual,
+      lngActual,
+      Number(cliente.latitud),
+      Number(cliente.longitud)
+    );
+
+    const radioGeocerca =
+      numeroValido(cliente.radio_geocerca) || 30;
+
+    const toleranciaConfirmacion = Math.max(
+      radioGeocerca,
+      50
+    );
+
+    if (distancia > toleranciaConfirmacion) {
+      return res.status(400).json({
+        error: "El cliente seleccionado está demasiado lejos",
+        distancia_metros: Math.round(distancia),
+        radio_permitido: toleranciaConfirmacion
+      });
+    }
+
+    const visitaAbierta = await obtenerVisitaAbierta(vendedor_id);
+
+    if (
+      visitaAbierta &&
+      visitaAbierta.cliente_id !== cliente_id
+    ) {
+      await cerrarVisita(
+        visitaAbierta.id,
+        latActual,
+        lngActual
+      );
+    }
+
+    const visita = await abrirVisita(
+      vendedor_id,
+      cliente_id,
+      latActual,
+      lngActual
+    );
+
+    return res.json({
+      mensaje: "Cliente confirmado. Visita iniciada.",
+      estado: "DENTRO",
+      cliente: cliente.nombre,
+      cliente_id: cliente.id,
+      distancia_metros: Math.round(distancia),
+      radio_geocerca: radioGeocerca,
+      visita_id: visita.id,
+      visita
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      error: "Error al confirmar cliente cercano",
+      detalle: error.message
+    });
+  }
+});
+
+/*
+=================================
 POST GPS AUTOMÁTICO + GEOCERCA
 =================================
 */
 
 router.post("/automatico", async (req, res) => {
   try {
-    const { vendedor_id, latitud, longitud, precision_metros, velocidad } = req.body;
+    const {
+      vendedor_id,
+      latitud,
+      longitud,
+      precision_metros,
+      velocidad
+    } = req.body;
 
-    const latActual = Number(latitud);
-    const lngActual = Number(longitud);
+    const latActual = numeroValido(latitud);
+    const lngActual = numeroValido(longitud);
 
     if (
       !vendedor_id ||
-      isNaN(latActual) ||
-      isNaN(lngActual) ||
+      latActual === null ||
+      lngActual === null ||
       latActual === 0 ||
       lngActual === 0
     ) {
@@ -214,136 +491,93 @@ router.post("/automatico", async (req, res) => {
       ]
     );
 
-    const clientesResult = await db.query(
-      `
-      SELECT
-        id,
-        nombre,
-        latitud,
-        longitud,
-        radio_geocerca
-      FROM clientes
-      WHERE vendedor_id = $1
-        AND deleted_at IS NULL
-        AND activo = true
-        AND latitud IS NOT NULL
-        AND longitud IS NOT NULL
-        AND latitud <> 0
-        AND longitud <> 0
-      `,
-      [vendedor_id]
+    const clientes = await obtenerClientesAsignados(vendedor_id);
+
+    const candidatos = obtenerCandidatos(
+      clientes,
+      latActual,
+      lngActual
     );
 
-    let clienteDentro = null;
-    let menorDistancia = 999999999;
-
-    for (const c of clientesResult.rows) {
-      const latCliente = Number(c.latitud);
-      const lngCliente = Number(c.longitud);
-
-      if (isNaN(latCliente) || isNaN(lngCliente)) {
-        continue;
-      }
-
-      const distancia = distanciaMetros(
-        latActual,
-        lngActual,
-        latCliente,
-        lngCliente
-      );
-
-      const radioCliente = Number(c.radio_geocerca || 50);
-      const radioMinimo = 50;
-      const radioFinal = Math.max(radioCliente, radioMinimo);
-
-      if (distancia <= radioFinal && distancia < menorDistancia) {
-        menorDistancia = distancia;
-        clienteDentro = {
-          ...c,
-          distancia,
-          radioFinal
-        };
-      }
-    }
+    const visitaAbierta = await obtenerVisitaAbierta(vendedor_id);
 
     /*
-    ===============================
-    SI ESTÁ DENTRO DE UN CLIENTE
-    ===============================
+    =================================
+    SI YA HAY UNA VISITA ABIERTA
+    =================================
     */
 
-    if (clienteDentro) {
-      const visitaAbiertaMismoCliente = await db.query(
-        `
-        SELECT id
-        FROM visitas
-        WHERE vendedor_id = $1
-          AND cliente_id = $2
-          AND fecha = CURRENT_DATE
-          AND hora_salida IS NULL
-        LIMIT 1
-        `,
-        [vendedor_id, clienteDentro.id]
-      );
+    if (visitaAbierta) {
+      const latCliente = numeroValido(visitaAbierta.latitud);
+      const lngCliente = numeroValido(visitaAbierta.longitud);
 
-      if (visitaAbiertaMismoCliente.rows.length > 0) {
+      const radioGeocerca =
+        numeroValido(visitaAbierta.radio_geocerca) || 30;
+
+      const distanciaCliente =
+        latCliente !== null && lngCliente !== null
+          ? distanciaMetros(
+              latActual,
+              lngActual,
+              latCliente,
+              lngCliente
+            )
+          : Number.POSITIVE_INFINITY;
+
+      if (distanciaCliente <= radioGeocerca) {
         return res.json({
           mensaje: "GPS recibido. Vendedor sigue dentro del cliente.",
           estado: "DENTRO",
-          cliente: clienteDentro.nombre,
-          cliente_id: clienteDentro.id,
-          distancia_metros: Math.round(clienteDentro.distancia),
-          radio_geocerca: clienteDentro.radioFinal,
-          visita_id: visitaAbiertaMismoCliente.rows[0].id
+          cliente: visitaAbierta.cliente,
+          cliente_id: visitaAbierta.cliente_id,
+          distancia_metros: Math.round(distanciaCliente),
+          radio_geocerca: radioGeocerca,
+          visita_id: visitaAbierta.id
         });
       }
 
-      const visitaAbiertaOtroCliente = await db.query(
-        `
-        SELECT id
-        FROM visitas
-        WHERE vendedor_id = $1
-          AND fecha = CURRENT_DATE
-          AND hora_salida IS NULL
-        ORDER BY hora_llegada DESC
-        LIMIT 1
-        `,
-        [vendedor_id]
+      const visitaCerrada = await cerrarVisita(
+        visitaAbierta.id,
+        latActual,
+        lngActual
       );
 
-      if (visitaAbiertaOtroCliente.rows.length > 0) {
-        await db.query(
-          `
-          UPDATE visitas
-          SET
-            hora_salida = NOW(),
-            permanencia_segundos =
-              EXTRACT(EPOCH FROM (NOW() - hora_llegada))::INTEGER
-          WHERE id = $1
-          `,
-          [visitaAbiertaOtroCliente.rows[0].id]
-        );
-      }
+      return res.json({
+        mensaje: "GPS recibido. Salida automática registrada.",
+        estado: "FUERA",
+        visita: visitaCerrada,
+        clientes_cercanos: candidatos
+      });
+    }
 
-      const nuevaVisita = await db.query(
-        `
-        INSERT INTO visitas (
-          cliente_id,
-          vendedor_id,
-          fecha,
-          hora_llegada,
-          latitud_llegada,
-          longitud_llegada
-        )
-        VALUES ($1,$2,CURRENT_DATE,NOW(),$3,$4)
-        RETURNING *
-        `,
-        [
-          clienteDentro.id,
-          vendedor_id,
-          latActual,
-          lngActual
-        ]
+    /*
+    =================================
+    MÁS DE UN CLIENTE CERCANO
+    =================================
+    */
+
+    if (candidatos.length > 1) {
+      return res.json({
+        mensaje: "Hay varios clientes dentro de la geocerca.",
+        estado: "MULTIPLES_CLIENTES",
+        clientes: candidatos
+      });
+    }
+
+    /*
+    =================================
+    UN SOLO CLIENTE CERCANO
+    =================================
+    */
+
+    if (candidatos.length === 1) {
+      const clienteDentro = candidatos[0];
+
+      const visita = await abrirVisita(
+        vendedor_id,
+        clienteDentro.id,
+        latActual,
+        lngActual
       );
 
       return res.json({
@@ -351,53 +585,20 @@ router.post("/automatico", async (req, res) => {
         estado: "DENTRO",
         cliente: clienteDentro.nombre,
         cliente_id: clienteDentro.id,
-        distancia_metros: Math.round(clienteDentro.distancia),
-        radio_geocerca: clienteDentro.radioFinal,
-        visita: nuevaVisita.rows[0]
+        distancia_metros: clienteDentro.distancia_metros,
+        radio_geocerca: clienteDentro.radio_geocerca,
+        visita_id: visita.id,
+        visita
       });
     }
 
     /*
-    ===============================
-    SI ESTÁ FUERA DE CLIENTES
-    ===============================
+    =================================
+    FUERA DE TODOS LOS CLIENTES
+    =================================
     */
 
-    const visitaAbierta = await db.query(
-      `
-      SELECT id
-      FROM visitas
-      WHERE vendedor_id = $1
-        AND fecha = CURRENT_DATE
-        AND hora_salida IS NULL
-      ORDER BY hora_llegada DESC
-      LIMIT 1
-      `,
-      [vendedor_id]
-    );
-
-    if (visitaAbierta.rows.length > 0) {
-      const cerrar = await db.query(
-        `
-        UPDATE visitas
-        SET
-          hora_salida = NOW(),
-          permanencia_segundos =
-            EXTRACT(EPOCH FROM (NOW() - hora_llegada))::INTEGER
-        WHERE id = $1
-        RETURNING *
-        `,
-        [visitaAbierta.rows[0].id]
-      );
-
-      return res.json({
-        mensaje: "GPS recibido. Salida automática registrada.",
-        estado: "FUERA",
-        visita: cerrar.rows[0]
-      });
-    }
-
-    res.json({
+    return res.json({
       mensaje: "GPS recibido. Fuera de clientes.",
       estado: "FUERA"
     });
