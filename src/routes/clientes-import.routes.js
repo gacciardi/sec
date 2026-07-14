@@ -6,9 +6,21 @@ const db = require("../config/database");
 const router = express.Router();
 const upload = multer({ dest: "uploads/" });
 
+/*
+=================================
+FUNCIONES DE NORMALIZACIÓN
+=================================
+*/
+
 function valorCampo(fila, nombre) {
   const clave = Object.keys(fila).find(
-    k => k.trim().toLowerCase() === nombre.toLowerCase()
+    k =>
+      String(k)
+        .trim()
+        .toLowerCase() ===
+      String(nombre)
+        .trim()
+        .toLowerCase()
   );
 
   return clave ? fila[clave] : null;
@@ -22,11 +34,28 @@ function limpiarTexto(valor) {
     return null;
   }
 
-  const texto = String(valor).trim();
+  const texto = String(valor)
+    .trim()
+    .replace(/\s+/g, " ");
 
   return texto === ""
     ? null
     : texto;
+}
+
+function normalizarTextoComparacion(valor) {
+  const texto = limpiarTexto(valor);
+
+  if (!texto) {
+    return "";
+  }
+
+  return texto
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizarCodigo(valor) {
@@ -60,9 +89,7 @@ function normalizarNumero(valor) {
 }
 
 function normalizarCategoria(valor) {
-  const categoria = String(
-    valor || ""
-  )
+  const categoria = String(valor || "")
     .trim()
     .substring(0, 1)
     .toUpperCase();
@@ -103,6 +130,12 @@ function normalizarCoordenadas(
     invertidas
   };
 }
+
+/*
+=================================
+BÚSQUEDAS AUXILIARES
+=================================
+*/
 
 async function buscarFrecuencia(valor) {
   const nombre = limpiarTexto(valor);
@@ -160,7 +193,10 @@ async function obtenerOCrearRuta(valor) {
 
   let result = await db.query(
     `
-    SELECT id, nombre
+    SELECT
+      id,
+      nombre,
+      vendedor_id
     FROM rutas
     WHERE UPPER(TRIM(nombre)) =
           UPPER(TRIM($1))
@@ -173,7 +209,9 @@ async function obtenerOCrearRuta(valor) {
     return {
       rutaId: result.rows[0].id,
       creada: false,
-      nombre: result.rows[0].nombre
+      nombre: result.rows[0].nombre,
+      vendedorIdActual:
+        result.rows[0].vendedor_id
     };
   }
 
@@ -184,7 +222,10 @@ async function obtenerOCrearRuta(valor) {
       activo
     )
     VALUES ($1, true)
-    RETURNING id, nombre
+    RETURNING
+      id,
+      nombre,
+      vendedor_id
     `,
     [rutaNombre]
   );
@@ -192,108 +233,100 @@ async function obtenerOCrearRuta(valor) {
   return {
     rutaId: result.rows[0].id,
     creada: true,
-    nombre: result.rows[0].nombre
+    nombre: result.rows[0].nombre,
+    vendedorIdActual: null
   };
 }
 
-async function buscarVendedor(fila) {
-  const legajo =
-    normalizarCodigo(
-      valorCampo(
-        fila,
-        "legajo_vendedor"
-      )
-    );
+async function cargarVendedores() {
+  const result = await db.query(
+    `
+    SELECT
+      id,
+      nombre,
+      apellido,
+      legajo,
+      activo
+    FROM usuarios
+    WHERE UPPER(TRIM(rol)) = 'VENDEDOR'
+    ORDER BY nombre, apellido
+    `
+  );
 
-  const vendedorTexto =
-    limpiarTexto(
-      valorCampo(
-        fila,
-        "vendedor"
-      )
-    );
+  return result.rows.map(vendedor => {
+    const nombreCompleto =
+      limpiarTexto(
+        `${vendedor.nombre || ""} ${vendedor.apellido || ""}`
+      ) || "";
 
-  /*
-  Primero intenta por legajo, porque es
-  el dato más seguro.
-  */
-  if (legajo) {
-    const porLegajo = await db.query(
-      `
-      SELECT
-        id,
-        nombre,
-        apellido,
-        legajo
-      FROM usuarios
-      WHERE UPPER(rol) = 'VENDEDOR'
-        AND TRIM(CAST(legajo AS TEXT)) =
-            TRIM($1)
-      LIMIT 1
-      `,
-      [legajo]
-    );
-
-    if (porLegajo.rows.length > 0) {
-      return {
-        vendedor: porLegajo.rows[0],
-        buscadoPor: "legajo",
-        valorBuscado: legajo
-      };
-    }
+    const apellidoNombre =
+      limpiarTexto(
+        `${vendedor.apellido || ""} ${vendedor.nombre || ""}`
+      ) || "";
 
     return {
+      ...vendedor,
+
+      nombre_completo:
+        nombreCompleto,
+
+      clave_nombre:
+        normalizarTextoComparacion(
+          nombreCompleto
+        ),
+
+      clave_apellido_nombre:
+        normalizarTextoComparacion(
+          apellidoNombre
+        )
+    };
+  });
+}
+
+function buscarVendedorPorNombre(
+  vendedores,
+  valorExcel
+) {
+  const nombreExcel =
+    limpiarTexto(valorExcel);
+
+  if (!nombreExcel) {
+    return {
       vendedor: null,
-      buscadoPor: "legajo",
-      valorBuscado: legajo
+      valorBuscado: null,
+      coincidencias: []
     };
   }
 
-  /*
-  Si no hay legajo, intenta por nombre
-  completo.
-  */
-  if (vendedorTexto) {
-    const porNombre = await db.query(
-      `
-      SELECT
-        id,
-        nombre,
-        apellido,
-        legajo
-      FROM usuarios
-      WHERE UPPER(rol) = 'VENDEDOR'
-        AND UPPER(
-          TRIM(
-            nombre || ' ' || apellido
-          )
-        ) = UPPER(TRIM($1))
-      LIMIT 1
-      `,
-      [vendedorTexto]
+  const clave =
+    normalizarTextoComparacion(
+      nombreExcel
     );
 
-    if (porNombre.rows.length > 0) {
-      return {
-        vendedor: porNombre.rows[0],
-        buscadoPor: "nombre",
-        valorBuscado: vendedorTexto
-      };
-    }
-
-    return {
-      vendedor: null,
-      buscadoPor: "nombre",
-      valorBuscado: vendedorTexto
-    };
-  }
+  const coincidencias =
+    vendedores.filter(vendedor =>
+      vendedor.clave_nombre === clave ||
+      vendedor.clave_apellido_nombre === clave
+    );
 
   return {
-    vendedor: null,
-    buscadoPor: null,
-    valorBuscado: null
+    vendedor:
+      coincidencias.length === 1
+        ? coincidencias[0]
+        : null,
+
+    valorBuscado:
+      nombreExcel,
+
+    coincidencias
   };
 }
+
+/*
+=================================
+IMPORTAR CLIENTES
+=================================
+*/
 
 router.post(
   "/",
@@ -323,15 +356,20 @@ router.post(
           }
         );
 
+      const vendedores =
+        await cargarVendedores();
+
       let importados = 0;
       let actualizados = 0;
       let sinCambios = 0;
       let omitidos = 0;
       let suspendidos = 0;
       let reactivados = 0;
+
       let rutasCreadas = 0;
       let rutasAsignadas = 0;
       let clientesAsignadosDirectamente = 0;
+
       let sinCoordenadas = 0;
       let coordenadasInvertidas = 0;
 
@@ -339,10 +377,12 @@ router.post(
       const advertencias = [];
       const codigosImportados = [];
 
+      const vendedoresEncontrados =
+        new Set();
+
       /*
-      Sirve para detectar que una misma ruta
-      no venga con dos vendedores diferentes
-      dentro del mismo Excel.
+      Evita que dentro del mismo Excel una ruta
+      sea asignada a dos vendedores diferentes.
       */
       const asignacionesRuta =
         new Map();
@@ -352,8 +392,11 @@ router.post(
         indice < filas.length;
         indice++
       ) {
-        const fila = filas[indice];
-        const numeroFila = indice + 2;
+        const fila =
+          filas[indice];
+
+        const numeroFila =
+          indice + 2;
 
         try {
           const codigoCliente =
@@ -370,7 +413,7 @@ router.post(
             errores.push({
               fila: numeroFila,
               motivo:
-                "Sin codigo_cliente"
+                "La fila no tiene codigo_cliente"
             });
 
             continue;
@@ -416,7 +459,9 @@ router.post(
               )
             );
 
-          if (coordenadas.invertidas) {
+          if (
+            coordenadas.invertidas
+          ) {
             coordenadasInvertidas++;
           }
 
@@ -435,21 +480,55 @@ router.post(
               )
             );
 
+          const frecuenciaExcel =
+            valorCampo(
+              fila,
+              "frecuencia"
+            );
+
+          const canalExcel =
+            valorCampo(
+              fila,
+              "canal"
+            );
+
           const frecuenciaId =
             await buscarFrecuencia(
-              valorCampo(
-                fila,
-                "frecuencia"
-              )
+              frecuenciaExcel
             );
 
           const canalId =
             await buscarCanal(
-              valorCampo(
-                fila,
-                "canal"
-              )
+              canalExcel
             );
+
+          if (
+            limpiarTexto(frecuenciaExcel) &&
+            !frecuenciaId
+          ) {
+            advertencias.push({
+              fila: numeroFila,
+              codigo_cliente:
+                codigoCliente,
+              motivo:
+                `No se encontró la frecuencia: ` +
+                `${limpiarTexto(frecuenciaExcel)}`
+            });
+          }
+
+          if (
+            limpiarTexto(canalExcel) &&
+            !canalId
+          ) {
+            advertencias.push({
+              fila: numeroFila,
+              codigo_cliente:
+                codigoCliente,
+              motivo:
+                `No se encontró el canal: ` +
+                `${limpiarTexto(canalExcel)}`
+            });
+          }
 
           const rutaResultado =
             await obtenerOCrearRuta(
@@ -462,39 +541,85 @@ router.post(
           const rutaId =
             rutaResultado.rutaId;
 
-          if (rutaResultado.creada) {
+          if (
+            rutaResultado.creada
+          ) {
             rutasCreadas++;
           }
 
+          /*
+          La columna del Excel debe llamarse:
+          vendedor
+          */
           const vendedorResultado =
-            await buscarVendedor(fila);
+            buscarVendedorPorNombre(
+              vendedores,
+              valorCampo(
+                fila,
+                "vendedor"
+              )
+            );
 
           const vendedor =
             vendedorResultado.vendedor;
 
-          /*
-          Si se escribió un vendedor pero no
-          existe en SEC, se informa y no se
-          pisa ninguna asignación anterior.
-          */
           if (
             vendedorResultado.valorBuscado &&
-            !vendedor
+            vendedorResultado.coincidencias.length === 0
           ) {
             advertencias.push({
               fila: numeroFila,
               codigo_cliente:
                 codigoCliente,
+              vendedor:
+                vendedorResultado.valorBuscado,
               motivo:
-                `No se encontró el vendedor por ` +
-                `${vendedorResultado.buscadoPor}: ` +
-                `${vendedorResultado.valorBuscado}`
+                `No se encontró el vendedor ` +
+                `"${vendedorResultado.valorBuscado}" ` +
+                `en Usuarios`
             });
           }
 
+          if (
+            vendedorResultado.valorBuscado &&
+            vendedorResultado.coincidencias.length > 1
+          ) {
+            advertencias.push({
+              fila: numeroFila,
+              codigo_cliente:
+                codigoCliente,
+              vendedor:
+                vendedorResultado.valorBuscado,
+              motivo:
+                `Hay más de un vendedor que coincide ` +
+                `con "${vendedorResultado.valorBuscado}". ` +
+                `No se modificó la asignación.`
+            });
+          }
+
+          if (vendedor) {
+            vendedoresEncontrados.add(
+              vendedor.id
+            );
+
+            if (
+              vendedor.activo === false
+            ) {
+              advertencias.push({
+                fila: numeroFila,
+                codigo_cliente:
+                  codigoCliente,
+                vendedor:
+                  vendedor.nombre_completo,
+                motivo:
+                  "El vendedor está inactivo, pero fue encontrado"
+              });
+            }
+          }
+
           /*
-          Si hay ruta y vendedor, se asigna
-          el vendedor a la ruta.
+          Si hay ruta y vendedor, la asignación
+          se realiza sobre la ruta.
           */
           if (
             rutaId &&
@@ -517,8 +642,7 @@ router.post(
                 motivo:
                   `La ruta ${rutaResultado.nombre} ` +
                   `aparece con más de un vendedor ` +
-                  `en el mismo Excel. Se conservó ` +
-                  `la primera asignación.`
+                  `en el Excel. Se conservó el primero.`
               });
 
             } else {
@@ -569,6 +693,12 @@ router.post(
               [codigoCliente]
             );
 
+          /*
+          =============================
+          ACTUALIZAR CLIENTE EXISTENTE
+          =============================
+          */
+
           if (
             existente.rows.length > 0
           ) {
@@ -582,13 +712,11 @@ router.post(
             }
 
             /*
-            Cuando hay ruta, el vendedor queda
-            administrado por la ruta.
+            Si hay ruta, el vendedor efectivo
+            se obtiene desde la ruta.
 
-            Si no hay ruta y el Excel trae
-            vendedor, se asigna directamente.
-            Si no trae vendedor, conserva el
-            existente.
+            Si no hay ruta, se puede asignar
+            directamente al cliente.
             */
             let vendedorDirecto =
               clienteActual.vendedor_id;
@@ -600,7 +728,12 @@ router.post(
               vendedorDirecto =
                 vendedor.id;
 
-              clientesAsignadosDirectamente++;
+              if (
+                clienteActual.vendedor_id !==
+                vendedor.id
+              ) {
+                clientesAsignadosDirectamente++;
+              }
             }
 
             const valoresNuevos = {
@@ -648,14 +781,26 @@ router.post(
             };
 
             const cambio =
-              clienteActual.nombre !==
-                valoresNuevos.nombre ||
+              String(
+                clienteActual.nombre ?? ""
+              ) !==
+                String(
+                  valoresNuevos.nombre ?? ""
+                ) ||
 
-              clienteActual.direccion !==
-                valoresNuevos.direccion ||
+              String(
+                clienteActual.direccion ?? ""
+              ) !==
+                String(
+                  valoresNuevos.direccion ?? ""
+                ) ||
 
-              clienteActual.localidad !==
-                valoresNuevos.localidad ||
+              String(
+                clienteActual.localidad ?? ""
+              ) !==
+                String(
+                  valoresNuevos.localidad ?? ""
+                ) ||
 
               Number(
                 clienteActual.latitud
@@ -739,6 +884,12 @@ router.post(
             }
 
           } else {
+            /*
+            =============================
+            CREAR CLIENTE NUEVO
+            =============================
+            */
+
             const vendedorDirecto =
               !rutaId && vendedor
                 ? vendedor.id
@@ -817,18 +968,17 @@ router.post(
       }
 
       /*
-      Los clientes que no vienen en el nuevo
+      Los clientes que no aparecen en el nuevo
       padrón quedan suspendidos.
       */
       if (
         codigosImportados.length > 0
       ) {
-        const codigosUnicos =
-          [
-            ...new Set(
-              codigosImportados
-            )
-          ];
+        const codigosUnicos = [
+          ...new Set(
+            codigosImportados
+          )
+        ];
 
         const resultadoSuspendidos =
           await db.query(
@@ -871,6 +1021,9 @@ router.post(
         rutasAsignadas,
 
         clientesAsignadosDirectamente,
+
+        vendedoresEncontrados:
+          vendedoresEncontrados.size,
 
         advertencias,
         errores
