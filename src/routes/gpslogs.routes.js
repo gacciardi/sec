@@ -142,7 +142,7 @@ async function actualizarSesionGps(
       primer_movimiento =
         CASE
           WHEN primer_movimiento IS NULL
-            AND $5::numeric > 1
+            AND $4::numeric > 1
           THEN NOW()
 
           ELSE primer_movimiento
@@ -159,7 +159,6 @@ async function actualizarSesionGps(
       sesion.id,
       latitud,
       longitud,
-      vendedorId,
       velocidadNumero
     ]
   );
