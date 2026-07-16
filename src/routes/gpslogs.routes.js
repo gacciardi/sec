@@ -240,16 +240,13 @@ async function obtenerClientesAsignados(
       AND c.longitud <> 0
 
       AND (
-        (
-          r.vendedor_id = $1
-          AND r.activo = true
-        )
+  c.vendedor_id = $1
 
-        OR (
-          r.vendedor_id IS NULL
-          AND c.vendedor_id = $1
-        )
-      )
+  OR (
+    r.vendedor_id = $1
+    AND r.activo = true
+  )
+)
     `,
     [vendedorId]
   );
