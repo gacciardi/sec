@@ -801,6 +801,87 @@ router.get("/:id", async (req, res) => {
 
 /*
 =================================
+ACTUALIZAR SOLO UBICACIÓN
+=================================
+*/
+
+router.put("/:id/ubicacion", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const {
+      latitud,
+      longitud,
+      radio_geocerca
+    } = req.body;
+
+    const coordenadas =
+      normalizarCoordenadas(
+        latitud,
+        longitud
+      );
+
+    if (
+      coordenadas.latitud === null ||
+      coordenadas.longitud === null
+    ) {
+      return res.status(400).json({
+        error: "Coordenadas inválidas"
+      });
+    }
+
+    const radio =
+      normalizarNumero(
+        radio_geocerca
+      ) || 15;
+
+    const result =
+      await db.query(
+        `
+        UPDATE clientes
+        SET
+          latitud = $1,
+          longitud = $2,
+          radio_geocerca = $3,
+          updated_at = NOW()
+        WHERE id = $4
+          AND deleted_at IS NULL
+        RETURNING *
+        `,
+        [
+          coordenadas.latitud,
+          coordenadas.longitud,
+          radio,
+          id
+        ]
+      );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Cliente no encontrado"
+      });
+    }
+
+    res.json({
+      mensaje: "Ubicación actualizada correctamente",
+      cliente: result.rows[0]
+    });
+
+  } catch (error) {
+    console.error(
+      "ERROR ACTUALIZANDO UBICACIÓN:",
+      error
+    );
+
+    res.status(500).json({
+      error: "Error al actualizar ubicación",
+      detalle: error.message
+    });
+  }
+});
+
+/*
+=================================
 ACTUALIZAR CLIENTE
 =================================
 */
