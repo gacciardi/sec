@@ -421,6 +421,165 @@ router.get("/", async (req, res) => {
 
 /*
 =================================
+PLAN DE TRABAJO POR VENDEDOR Y FECHA
+=================================
+*/
+
+router.get(
+  "/plan-trabajo/:vendedor_id",
+  async (req, res) => {
+    try {
+      const { vendedor_id } = req.params;
+      const fecha = String(req.query.fecha || "").trim();
+
+      if (fecha && !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+        return res.status(400).json({
+          error: "La fecha debe tener formato AAAA-MM-DD"
+        });
+      }
+
+      const fechaConsulta = fecha || null;
+
+      const vendedorResult = await db.query(
+        `
+        SELECT
+          id,
+          TRIM(
+            COALESCE(nombre, '') || ' ' || COALESCE(apellido, '')
+          ) AS vendedor
+        FROM usuarios
+        WHERE id = $1
+          AND rol = 'VENDEDOR'
+        LIMIT 1
+        `,
+        [vendedor_id]
+      );
+
+      if (vendedorResult.rows.length === 0) {
+        return res.status(404).json({ error: "Vendedor no encontrado" });
+      }
+
+      const result = await db.query(
+        `
+        WITH parametros AS (
+          SELECT COALESCE($2::date, CURRENT_DATE) AS fecha_consulta
+        ),
+        programados AS (
+          SELECT DISTINCT c.id AS cliente_id
+          FROM clientes c
+          LEFT JOIN rutas r ON r.id = c.ruta_id
+          LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
+          CROSS JOIN parametros p
+          WHERE c.deleted_at IS NULL
+            AND c.activo = true
+            AND (
+              (r.vendedor_id = $1 AND r.activo = true)
+              OR (r.vendedor_id IS NULL AND c.vendedor_id = $1)
+            )
+            AND (
+              (EXTRACT(ISODOW FROM p.fecha_consulta) = 1 AND fr.lunes = true)
+              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 2 AND fr.martes = true)
+              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 3 AND fr.miercoles = true)
+              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 4 AND fr.jueves = true)
+              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 5 AND fr.viernes = true)
+              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 6 AND fr.sabado = true)
+            )
+        ),
+        visitas_dia AS (
+          SELECT
+            v.cliente_id,
+            MIN(v.hora_llegada) AS hora_llegada,
+            MAX(v.hora_salida) AS hora_salida,
+            SUM(COALESCE(v.permanencia_segundos, 0))::int AS permanencia_segundos,
+            COUNT(*)::int AS cantidad_visitas
+          FROM visitas v
+          CROSS JOIN parametros p
+          WHERE v.vendedor_id = $1
+            AND v.fecha = p.fecha_consulta
+          GROUP BY v.cliente_id
+        ),
+        universo AS (
+          SELECT cliente_id FROM programados
+          UNION
+          SELECT cliente_id FROM visitas_dia
+        )
+        SELECT
+          c.id,
+          c.codigo_cliente,
+          c.nombre,
+          c.direccion,
+          c.localidad,
+          c.latitud,
+          c.longitud,
+          c.radio_geocerca,
+          ca.nombre AS canal,
+          fr.nombre AS frecuencia,
+          r.nombre AS ruta,
+          (p.cliente_id IS NOT NULL) AS programado,
+          (vd.cliente_id IS NOT NULL) AS visitado,
+          vd.hora_llegada,
+          vd.hora_salida,
+          COALESCE(vd.permanencia_segundos, 0)::int AS permanencia_segundos,
+          COALESCE(vd.cantidad_visitas, 0)::int AS cantidad_visitas,
+          CASE
+            WHEN c.latitud IS NULL OR c.longitud IS NULL
+              OR c.latitud = 0 OR c.longitud = 0
+            THEN false
+            ELSE true
+          END AS tiene_coordenadas
+        FROM universo u
+        INNER JOIN clientes c ON c.id = u.cliente_id
+        LEFT JOIN programados p ON p.cliente_id = c.id
+        LEFT JOIN visitas_dia vd ON vd.cliente_id = c.id
+        LEFT JOIN canales ca ON ca.id = c.canal_id
+        LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
+        LEFT JOIN rutas r ON r.id = c.ruta_id
+        WHERE c.deleted_at IS NULL
+        ORDER BY
+          CASE WHEN vd.cliente_id IS NOT NULL THEN 1 ELSE 0 END,
+          c.nombre ASC
+        `,
+        [vendedor_id, fechaConsulta]
+      );
+
+      const clientes = result.rows;
+      const total = clientes.length;
+      const visitados = clientes.filter(c => c.visitado).length;
+      const pendientes = clientes.filter(c => c.programado && !c.visitado).length;
+      const sinCoordenadas = clientes.filter(c => !c.tiene_coordenadas).length;
+      const noProgramadosVisitados = clientes.filter(c => !c.programado && c.visitado).length;
+      const permanenciaTotal = clientes.reduce(
+        (acumulado, c) => acumulado + Number(c.permanencia_segundos || 0),
+        0
+      );
+      const cobertura = total > 0 ? Math.round((visitados / total) * 100) : 0;
+
+      res.json({
+        fecha: fechaConsulta || new Date().toISOString().slice(0, 10),
+        vendedor: vendedorResult.rows[0],
+        resumen: {
+          total,
+          visitados,
+          pendientes,
+          sin_coordenadas: sinCoordenadas,
+          no_programados_visitados: noProgramadosVisitados,
+          permanencia_total_segundos: permanenciaTotal,
+          cobertura_porcentaje: cobertura
+        },
+        clientes
+      });
+    } catch (error) {
+      console.error("ERROR PLAN DE TRABAJO:", error);
+      res.status(500).json({
+        error: "Error al obtener el plan de trabajo",
+        detalle: error.message
+      });
+    }
+  }
+);
+
+/*
+=================================
 CLIENTES DEL VENDEDOR HOY
 =================================
 */
