@@ -20,6 +20,7 @@ const configuracionRoutes = require("./routes/configuracion.routes");
 const rutasRoutes = require("./routes/rutas.routes");
 const clientesExtraRoutes = require("./routes/clientes-extra.routes");
 const localizadorRoutes = require("./routes/localizador.routes");
+const diagnosticoRoutes = require("./routes/diagnostico.routes");
 
 const app = express();
 
@@ -83,7 +84,7 @@ app.use("/configuracion", configuracionRoutes);
 app.use("/rutas", rutasRoutes);
 app.use("/clientes-extra", clientesExtraRoutes);
 app.use("/localizador", localizadorRoutes);
-
+app.use("/diagnostico", diagnosticoRoutes);
 const PORT = process.env.PORT || 7890;
 
 app.listen(PORT, () => {
