@@ -130,10 +130,12 @@ router.get("/clientes", async (req, res) => {
 
         AND (
           $3 = 'todos'
+
           OR (
             $3 = 'pendientes'
             AND ultima.id IS NULL
           )
+
           OR (
             $3 = 'localizados'
             AND ultima.id IS NOT NULL
@@ -158,6 +160,11 @@ router.get("/clientes", async (req, res) => {
     res.json(result.rows);
 
   } catch (error) {
+    console.error(
+      "ERROR OBTENIENDO CLIENTES PARA LOCALIZAR:",
+      error
+    );
+
     res.status(500).json({
       error:
         "Error al obtener clientes para localizar",
@@ -170,7 +177,7 @@ router.get("/clientes", async (req, res) => {
 
 /*
 =================================
-GUARDAR NUEVA LOCALIZACIÓN
+GUARDAR LOCALIZACIÓN Y VISITA
 =================================
 */
 
@@ -179,6 +186,8 @@ router.post(
   async (req, res) => {
     const conexion =
       await db.connect();
+
+    let transaccionIniciada = false;
 
     try {
       const { cliente_id } =
@@ -200,6 +209,13 @@ router.post(
 
       const precision =
         numeroValido(precision_metros);
+
+      if (!vendedor_id) {
+        return res.status(400).json({
+          error:
+            "Debe indicar el vendedor que está localizando el cliente"
+        });
+      }
 
       if (
         latNueva === null ||
@@ -226,12 +242,8 @@ router.post(
       }
 
       /*
-      La precisión del celular no se compara con
-      la coordenada vieja.
-
-      Si supera 40 metros, se pide una confirmación
-      especial, pero nunca se impide corregir una
-      coordenada anterior que estuviera muy lejos.
+      Si la precisión supera los 40 metros,
+      se solicita confirmación antes de guardar.
       */
 
       if (
@@ -252,20 +264,39 @@ router.post(
       }
 
       await conexion.query("BEGIN");
+      transaccionIniciada = true;
+
+      /*
+      =================================
+      BUSCAR Y BLOQUEAR CLIENTE
+      =================================
+      */
 
       const clienteResult =
         await conexion.query(
           `
           SELECT
-            id,
-            codigo_cliente,
-            nombre,
-            latitud,
-            longitud
-          FROM clientes
-          WHERE id = $1
-            AND deleted_at IS NULL
-          FOR UPDATE
+            c.id,
+            c.codigo_cliente,
+            c.nombre,
+            c.latitud,
+            c.longitud,
+            c.vendedor_id
+              AS vendedor_directo_id,
+
+            r.vendedor_id
+              AS vendedor_ruta_id
+
+          FROM clientes c
+
+          LEFT JOIN rutas r
+            ON r.id = c.ruta_id
+
+          WHERE c.id = $1
+            AND c.deleted_at IS NULL
+            AND c.activo = true
+
+          FOR UPDATE OF c
           `,
           [cliente_id]
         );
@@ -274,15 +305,40 @@ router.post(
         clienteResult.rows.length === 0
       ) {
         await conexion.query("ROLLBACK");
+        transaccionIniciada = false;
 
         return res.status(404).json({
           error:
-            "Cliente no encontrado"
+            "Cliente no encontrado o inactivo"
         });
       }
 
       const cliente =
         clienteResult.rows[0];
+
+      /*
+      =================================
+      VALIDAR VENDEDOR ASIGNADO
+      =================================
+      */
+
+      const vendedorAsignado =
+        cliente.vendedor_directo_id ||
+        cliente.vendedor_ruta_id;
+
+      if (
+        !vendedorAsignado ||
+        String(vendedorAsignado) !==
+          String(vendedor_id)
+      ) {
+        await conexion.query("ROLLBACK");
+        transaccionIniciada = false;
+
+        return res.status(403).json({
+          error:
+            "El cliente no pertenece al vendedor seleccionado"
+        });
+      }
 
       const latAnterior =
         numeroValido(cliente.latitud);
@@ -304,6 +360,12 @@ router.post(
             lngNueva
           );
       }
+
+      /*
+      =================================
+      GUARDAR HISTORIAL
+      =================================
+      */
 
       const historial =
         await conexion.query(
@@ -334,7 +396,7 @@ router.post(
           `,
           [
             cliente_id,
-            vendedor_id || null,
+            vendedor_id,
             latAnterior,
             lngAnterior,
             latNueva,
@@ -343,6 +405,12 @@ router.post(
             distanciaCambio
           ]
         );
+
+      /*
+      =================================
+      ACTUALIZAR SOLO COORDENADAS
+      =================================
+      */
 
       await conexion.query(
         `
@@ -360,11 +428,180 @@ router.post(
         ]
       );
 
+      /*
+      =================================
+      CERRAR OTRA VISITA ABIERTA
+
+      Si existía una visita abierta para
+      otro cliente, se la cierra antes de
+      iniciar la visita actual.
+      =================================
+      */
+
+      const visitasCerradas =
+        await conexion.query(
+          `
+          UPDATE visitas
+          SET
+            hora_salida = NOW(),
+
+            permanencia_segundos =
+              GREATEST(
+                0,
+                EXTRACT(
+                  EPOCH FROM (
+                    NOW() -
+                    hora_llegada
+                  )
+                )::INTEGER
+              ),
+
+            latitud_salida = $2,
+            longitud_salida = $3
+
+          WHERE vendedor_id = $1
+            AND fecha = CURRENT_DATE
+            AND hora_salida IS NULL
+            AND cliente_id <> $4
+
+          RETURNING *
+          `,
+          [
+            vendedor_id,
+            latNueva,
+            lngNueva,
+            cliente_id
+          ]
+        );
+
+      /*
+      =================================
+      BUSCAR VISITA ABIERTA DEL CLIENTE
+      =================================
+      */
+
+      const visitaAbiertaResult =
+        await conexion.query(
+          `
+          SELECT *
+          FROM visitas
+
+          WHERE vendedor_id = $1
+            AND cliente_id = $2
+            AND fecha = CURRENT_DATE
+            AND hora_salida IS NULL
+
+          ORDER BY hora_llegada DESC
+          LIMIT 1
+          `,
+          [
+            vendedor_id,
+            cliente_id
+          ]
+        );
+
+      let visita;
+      let visitaCreada = false;
+
+      /*
+      Si ya estaba abierta, no se duplica.
+      Si no existía, se crea inmediatamente.
+      */
+
+      if (
+        visitaAbiertaResult.rows.length > 0
+      ) {
+        visita =
+          visitaAbiertaResult.rows[0];
+
+      } else {
+        const nuevaVisita =
+          await conexion.query(
+            `
+            INSERT INTO visitas (
+              cliente_id,
+              vendedor_id,
+              fecha,
+              hora_llegada,
+              latitud_llegada,
+              longitud_llegada
+            )
+            VALUES (
+              $1,
+              $2,
+              CURRENT_DATE,
+              NOW(),
+              $3,
+              $4
+            )
+            RETURNING *
+            `,
+            [
+              cliente_id,
+              vendedor_id,
+              latNueva,
+              lngNueva
+            ]
+          );
+
+        visita =
+          nuevaVisita.rows[0];
+
+        visitaCreada = true;
+      }
+
+      /*
+      =================================
+      MARCAR PRIMER CLIENTE DE LA SESIÓN
+      =================================
+      */
+
+      await conexion.query(
+        `
+        UPDATE sesiones_vendedores
+        SET
+          primer_cliente =
+            COALESCE(
+              primer_cliente,
+              NOW()
+            ),
+
+          ultima_latitud = $2,
+          ultima_longitud = $3,
+          ultimo_gps = NOW(),
+          updated_at = NOW()
+
+        WHERE id = (
+          SELECT id
+          FROM sesiones_vendedores
+          WHERE vendedor_id = $1
+            AND estado = 'ACTIVA'
+          ORDER BY inicio_sesion DESC
+          LIMIT 1
+        )
+        `,
+        [
+          vendedor_id,
+          latNueva,
+          lngNueva
+        ]
+      );
+
       await conexion.query("COMMIT");
+      transaccionIniciada = false;
 
       res.json({
         mensaje:
-          "Cliente localizado correctamente",
+          "Cliente localizado y marcado como visitado",
+
+        estado:
+          "DENTRO",
+
+        cliente_visitado:
+          true,
+
+        visita_creada:
+          visitaCreada,
 
         cliente: {
           id:
@@ -376,6 +613,17 @@ router.post(
           nombre:
             cliente.nombre
         },
+
+        cliente_id:
+          cliente.id,
+
+        visita_id:
+          visita.id,
+
+        visita,
+
+        visitas_anteriores_cerradas:
+          visitasCerradas.rows.length,
 
         coordenada_anterior: {
           latitud:
@@ -406,11 +654,25 @@ router.post(
       });
 
     } catch (error) {
-      await conexion.query("ROLLBACK");
+      if (transaccionIniciada) {
+        try {
+          await conexion.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error(
+            "ERROR HACIENDO ROLLBACK:",
+            rollbackError
+          );
+        }
+      }
+
+      console.error(
+        "ERROR GUARDANDO LOCALIZACIÓN Y VISITA:",
+        error
+      );
 
       res.status(500).json({
         error:
-          "Error al guardar la localización",
+          "Error al guardar la localización y registrar la visita",
 
         detalle:
           error.message
@@ -458,6 +720,11 @@ router.get(
       res.json(result.rows);
 
     } catch (error) {
+      console.error(
+        "ERROR OBTENIENDO HISTORIAL:",
+        error
+      );
+
       res.status(500).json({
         error:
           "Error al obtener historial de localización",
