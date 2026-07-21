@@ -5,7 +5,7 @@ const cors = require("cors");
 const db = require("./config/database");
 
 const alertasRoutes = require("./routes/alertas.routes");
-const gpsLogsRoutes = require("./routes/gpslogs.routes");
+const gpsLogsRoutes = require("./routes/gps-logs.routes");
 const visitasRoutes = require("./routes/visitas.routes");
 const clientesRoutes = require("./routes/clientes.routes");
 const frecuenciasRoutes = require("./routes/frecuencias.routes");
