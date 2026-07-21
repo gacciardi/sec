@@ -1,8 +1,3 @@
-Biblioteca
-/
-diagnostico.routes.txt
-
-
 const express = require("express");
 const db = require("../config/database");
 
