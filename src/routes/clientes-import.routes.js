@@ -718,8 +718,7 @@ router.post(
             Si no hay ruta, se puede asignar
             directamente al cliente.
             */
-            let vendedorDirecto =
-              clienteActual.vendedor_id;
+            let vendedorDirecto = null;
 
             if (
               !rutaId &&
