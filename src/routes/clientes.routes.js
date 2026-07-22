@@ -1280,6 +1280,7 @@ router.get(
 /*
 =================================
 CLIENTES DEL VENDEDOR HOY
+INCLUYE REEMPLAZOS DE RUTA
 =================================
 */
 
@@ -1287,141 +1288,193 @@ router.get(
   "/vendedor/:vendedor_id/hoy",
   async (req, res) => {
     try {
-      const { vendedor_id } =
-        req.params;
 
-      const result =
-        await db.query(
-          `
-          SELECT DISTINCT
-            c.id,
-            c.codigo_cliente,
-            c.nombre,
-            c.direccion,
-            c.localidad,
-            c.latitud,
-            c.longitud,
-            c.radio_geocerca,
-            c.categoria,
+      const { vendedor_id } = req.params;
 
-            ca.nombre AS canal,
-            fr.nombre AS frecuencia,
-            r.nombre AS ruta,
+      const result = await db.query(
+        `
+        WITH rutas_efectivas AS (
+
+          SELECT
+            r.id AS ruta_id,
 
             COALESCE(
-              r.vendedor_id,
-              c.vendedor_id
-            ) AS vendedor_id,
+              reemplazo.vendedor_reemplazo_id,
+              r.vendedor_id
+            ) AS vendedor_efectivo_id
 
-            CASE
-              WHEN ur.id IS NOT NULL
-              THEN TRIM(
-                COALESCE(ur.nombre, '') ||
-                ' ' ||
-                COALESCE(ur.apellido, '')
-              )
+          FROM rutas r
 
-              WHEN uc.id IS NOT NULL
-              THEN TRIM(
-                COALESCE(uc.nombre, '') ||
-                ' ' ||
-                COALESCE(uc.apellido, '')
-              )
+          LEFT JOIN LATERAL (
 
-              ELSE NULL
-            END AS vendedor
+            SELECT
+              rr.vendedor_reemplazo_id
 
-          FROM clientes c
+            FROM reemplazos_ruta rr
 
-          LEFT JOIN canales ca
-            ON ca.id = c.canal_id
+            WHERE rr.ruta_id = r.id
+              AND rr.activo = true
+              AND CURRENT_DATE
+                  BETWEEN rr.fecha_desde
+                      AND rr.fecha_hasta
 
-          LEFT JOIN frecuencias fr
-            ON fr.id = c.frecuencia_id
+            ORDER BY rr.created_at DESC
 
-          LEFT JOIN rutas r
-            ON r.id = c.ruta_id
+            LIMIT 1
 
-          LEFT JOIN usuarios uc
-            ON uc.id = c.vendedor_id
+          ) reemplazo
+            ON true
 
-          LEFT JOIN usuarios ur
-            ON ur.id = r.vendedor_id
+          WHERE r.activo = true
+        )
 
-          WHERE c.deleted_at IS NULL
-            AND c.activo = true
+        SELECT DISTINCT
 
-            AND (
-              (
-                r.vendedor_id = $1
-                AND r.activo = true
-              )
+          c.id,
+          c.codigo_cliente,
+          c.nombre,
+          c.direccion,
+          c.localidad,
+          c.latitud,
+          c.longitud,
+          c.radio_geocerca,
+          c.categoria,
 
-              OR (
-                r.vendedor_id IS NULL
-                AND c.vendedor_id = $1
-              )
+          ca.nombre AS canal,
+          fr.nombre AS frecuencia,
+          r.nombre AS ruta,
+
+          COALESCE(
+            re.vendedor_efectivo_id,
+            c.vendedor_id
+          ) AS vendedor_id,
+
+          CASE
+
+            WHEN reemplazo_usuario.id IS NOT NULL
+            THEN TRIM(
+              COALESCE(reemplazo_usuario.nombre, '') ||
+              ' ' ||
+              COALESCE(reemplazo_usuario.apellido, '')
             )
 
-            AND (
-              (
-                EXTRACT(
-                  ISODOW
-                  FROM CURRENT_DATE
-                ) = 1
-                AND fr.lunes = true
-              )
-
-              OR (
-                EXTRACT(
-                  ISODOW
-                  FROM CURRENT_DATE
-                ) = 2
-                AND fr.martes = true
-              )
-
-              OR (
-                EXTRACT(
-                  ISODOW
-                  FROM CURRENT_DATE
-                ) = 3
-                AND fr.miercoles = true
-              )
-
-              OR (
-                EXTRACT(
-                  ISODOW
-                  FROM CURRENT_DATE
-                ) = 4
-                AND fr.jueves = true
-              )
-
-              OR (
-                EXTRACT(
-                  ISODOW
-                  FROM CURRENT_DATE
-                ) = 5
-                AND fr.viernes = true
-              )
-
-              OR (
-                EXTRACT(
-                  ISODOW
-                  FROM CURRENT_DATE
-                ) = 6
-                AND fr.sabado = true
-              )
+            WHEN uc.id IS NOT NULL
+            THEN TRIM(
+              COALESCE(uc.nombre, '') ||
+              ' ' ||
+              COALESCE(uc.apellido, '')
             )
 
-          ORDER BY
-            c.nombre ASC
-          `,
-          [vendedor_id]
-        );
+            ELSE NULL
+
+          END AS vendedor
+
+        FROM clientes c
+
+        LEFT JOIN canales ca
+          ON ca.id = c.canal_id
+
+        LEFT JOIN frecuencias fr
+          ON fr.id = c.frecuencia_id
+
+        LEFT JOIN rutas r
+          ON r.id = c.ruta_id
+
+        LEFT JOIN rutas_efectivas re
+          ON re.ruta_id = c.ruta_id
+
+        LEFT JOIN usuarios reemplazo_usuario
+          ON reemplazo_usuario.id =
+             re.vendedor_efectivo_id
+
+        LEFT JOIN usuarios uc
+          ON uc.id = c.vendedor_id
+
+        WHERE c.deleted_at IS NULL
+          AND c.activo = true
+
+          AND (
+
+            (
+              c.ruta_id IS NOT NULL
+              AND re.vendedor_efectivo_id = $1
+            )
+
+            OR
+
+            (
+              c.ruta_id IS NULL
+              AND c.vendedor_id = $1
+            )
+
+          )
+
+          AND (
+
+            (
+              EXTRACT(
+                ISODOW FROM CURRENT_DATE
+              ) = 1
+              AND fr.lunes = true
+            )
+
+            OR
+
+            (
+              EXTRACT(
+                ISODOW FROM CURRENT_DATE
+              ) = 2
+              AND fr.martes = true
+            )
+
+            OR
+
+            (
+              EXTRACT(
+                ISODOW FROM CURRENT_DATE
+              ) = 3
+              AND fr.miercoles = true
+            )
+
+            OR
+
+            (
+              EXTRACT(
+                ISODOW FROM CURRENT_DATE
+              ) = 4
+              AND fr.jueves = true
+            )
+
+            OR
+
+            (
+              EXTRACT(
+                ISODOW FROM CURRENT_DATE
+              ) = 5
+              AND fr.viernes = true
+            )
+
+            OR
+
+            (
+              EXTRACT(
+                ISODOW FROM CURRENT_DATE
+              ) = 6
+              AND fr.sabado = true
+            )
+
+          )
+
+        ORDER BY
+          c.nombre ASC
+        `,
+        [vendedor_id]
+      );
 
       res.json(result.rows);
 
     } catch (error) {
+
       console.error(
         "ERROR CLIENTES VENDEDOR HOY:",
         error
@@ -1434,6 +1487,7 @@ router.get(
         detalle:
           error.message
       });
+
     }
   }
 );
