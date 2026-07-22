@@ -1613,6 +1613,169 @@ router.post("/", async (req, res) => {
 
 /*
 =================================
+EXPORTAR PADRON ACTUALIZADO CSV
+=================================
+*/
+
+router.get(
+  "/exportar/csv",
+  async (req, res) => {
+    try {
+
+      const result = await db.query(`
+        SELECT
+          c.codigo_cliente,
+          c.nombre,
+          c.direccion,
+          c.localidad,
+          c.latitud,
+          c.longitud,
+          c.categoria,
+
+          fr.nombre AS frecuencia,
+          ca.nombre AS canal,
+          r.nombre AS ruta,
+
+          TRIM(
+            COALESCE(
+              ur.nombre,
+              ud.nombre,
+              ''
+            )
+            || ' ' ||
+            COALESCE(
+              ur.apellido,
+              ud.apellido,
+              ''
+            )
+          ) AS vendedor
+
+        FROM clientes c
+
+        LEFT JOIN frecuencias fr
+          ON fr.id = c.frecuencia_id
+
+        LEFT JOIN canales ca
+          ON ca.id = c.canal_id
+
+        LEFT JOIN rutas r
+          ON r.id = c.ruta_id
+
+        LEFT JOIN usuarios ur
+          ON ur.id = r.vendedor_id
+
+        LEFT JOIN usuarios ud
+          ON ud.id = c.vendedor_id
+
+        WHERE c.deleted_at IS NULL
+          AND c.activo = true
+
+        ORDER BY
+          r.nombre,
+          c.codigo_cliente
+      `);
+
+      const columnas = [
+        "codigo_cliente",
+        "nombre",
+        "direccion",
+        "localidad",
+        "latitud",
+        "longitud",
+        "categoria",
+        "frecuencia",
+        "canal",
+        "ruta",
+        "vendedor"
+      ];
+
+      function valorCsv(valor) {
+
+        if (
+          valor === null ||
+          valor === undefined
+        ) {
+          return "";
+        }
+
+        const texto =
+          String(valor)
+            .replace(/"/g, '""');
+
+        return '"' + texto + '"';
+      }
+
+      const filas = [];
+
+      filas.push(
+        columnas.join(",")
+      );
+
+      result.rows.forEach(cliente => {
+
+        filas.push(
+          columnas
+            .map(columna =>
+              valorCsv(
+                cliente[columna]
+              )
+            )
+            .join(",")
+        );
+
+      });
+
+      /*
+      BOM UTF-8 para que Excel
+      respete correctamente ñ y acentos.
+      */
+      const csv =
+        "\uFEFF" +
+        filas.join("\r\n");
+
+      const fecha =
+        new Date()
+          .toISOString()
+          .slice(0, 10);
+
+      const nombreArchivo =
+        "clientes_SEC_actualizados_" +
+        fecha +
+        ".csv";
+
+      res.setHeader(
+        "Content-Type",
+        "text/csv; charset=utf-8"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${nombreArchivo}"`
+      );
+
+      res.send(csv);
+
+    } catch (error) {
+
+      console.error(
+        "ERROR EXPORTANDO CLIENTES:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al exportar padrón de clientes",
+
+        detalle:
+          error.message
+      });
+
+    }
+  }
+);
+
+/*
+=================================
 GET CLIENTE POR ID
 =================================
 */
