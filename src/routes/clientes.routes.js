@@ -809,6 +809,32 @@ router.get(
 
           ),
 
+           ejecuciones_dia AS (
+
+            SELECT DISTINCT
+              ced.cliente_id,
+              ced.motivo
+
+            FROM clientes_extra_dia ced
+
+            INNER JOIN clientes c
+              ON c.id = ced.cliente_id
+
+            CROSS JOIN parametros p
+
+            WHERE
+              ced.fecha = p.fecha_consulta
+
+              AND ced.activo = true
+
+              AND c.deleted_at IS NULL
+
+              AND c.activo = true
+
+              AND c.ruta_id = $1
+
+          ),
+
           universo AS (
 
             SELECT
@@ -822,6 +848,13 @@ router.get(
               cliente_id
 
             FROM visitas_dia
+
+            UNION
+
+            SELECT
+              cliente_id
+
+            FROM ejecuciones_dia
 
           )
 
@@ -863,6 +896,15 @@ router.get(
               IS NOT NULL
             )
               AS visitado,
+
+            (
+              ejecuciones_dia.cliente_id
+              IS NOT NULL
+            )
+              AS es_ejecucion,
+
+            ejecuciones_dia.motivo
+              AS motivo_ejecucion,
 
             visitas_dia.hora_llegada,
 
@@ -912,9 +954,14 @@ router.get(
             ON programados.cliente_id =
                c.id
 
-          LEFT JOIN visitas_dia
+           LEFT JOIN visitas_dia
 
             ON visitas_dia.cliente_id =
+               c.id
+
+          LEFT JOIN ejecuciones_dia
+
+            ON ejecuciones_dia.cliente_id =
                c.id
 
           LEFT JOIN canales ca
@@ -1197,10 +1244,30 @@ router.get(
             AND v.fecha = p.fecha_consulta
           GROUP BY v.cliente_id
         ),
+        ejecuciones_dia AS (
+          SELECT DISTINCT
+            ced.cliente_id,
+            ced.motivo
+
+          FROM clientes_extra_dia ced
+
+          CROSS JOIN parametros p
+
+          WHERE ced.vendedor_id = $1
+            AND ced.fecha = p.fecha_consulta
+            AND ced.activo = true
+        ),
+
         universo AS (
           SELECT cliente_id FROM programados
+
           UNION
+
           SELECT cliente_id FROM visitas_dia
+
+          UNION
+
+          SELECT cliente_id FROM ejecuciones_dia
         )
         SELECT
           c.id,
@@ -1214,8 +1281,14 @@ router.get(
           ca.nombre AS canal,
           fr.nombre AS frecuencia,
           r.nombre AS ruta,
-          (p.cliente_id IS NOT NULL) AS programado,
+           (p.cliente_id IS NOT NULL) AS programado,
+
           (vd.cliente_id IS NOT NULL) AS visitado,
+
+          (ed.cliente_id IS NOT NULL) AS es_ejecucion,
+
+          ed.motivo AS motivo_ejecucion,
+
           vd.hora_llegada,
           vd.hora_salida,
           COALESCE(vd.permanencia_segundos, 0)::int AS permanencia_segundos,
@@ -1228,9 +1301,17 @@ router.get(
           END AS tiene_coordenadas
         FROM universo u
         INNER JOIN clientes c ON c.id = u.cliente_id
-        LEFT JOIN programados p ON p.cliente_id = c.id
-        LEFT JOIN visitas_dia vd ON vd.cliente_id = c.id
-        LEFT JOIN canales ca ON ca.id = c.canal_id
+        LEFT JOIN programados p
+          ON p.cliente_id = c.id
+
+        LEFT JOIN visitas_dia vd
+          ON vd.cliente_id = c.id
+
+        LEFT JOIN ejecuciones_dia ed
+          ON ed.cliente_id = c.id
+
+        LEFT JOIN canales ca
+          ON ca.id = c.canal_id
         LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
         LEFT JOIN rutas r ON r.id = c.ruta_id
         WHERE c.deleted_at IS NULL
