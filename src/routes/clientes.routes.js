@@ -421,6 +421,705 @@ router.get("/", async (req, res) => {
 
 /*
 =================================
+PLAN DE TRABAJO POR RUTA Y FECHA
+=================================
+*/
+
+router.get(
+  "/plan-trabajo/ruta/:ruta_id",
+  async (req, res) => {
+    try {
+
+      const { ruta_id } = req.params;
+
+      const fecha =
+        String(req.query.fecha || "").trim();
+
+      if (
+        fecha &&
+        !/^\d{4}-\d{2}-\d{2}$/.test(fecha)
+      ) {
+        return res.status(400).json({
+          error:
+            "La fecha debe tener formato AAAA-MM-DD"
+        });
+      }
+
+      const fechaConsulta =
+        fecha || null;
+
+      /*
+      =================================
+      DATOS DE LA RUTA
+      TITULAR + REEMPLAZO VIGENTE
+      =================================
+      */
+
+      const rutaResult =
+        await db.query(
+          `
+          SELECT
+
+            r.id AS ruta_id,
+
+            r.nombre AS ruta,
+
+            r.vendedor_id
+              AS vendedor_titular_id,
+
+            TRIM(
+              COALESCE(
+                titular.nombre,
+                ''
+              )
+              || ' ' ||
+              COALESCE(
+                titular.apellido,
+                ''
+              )
+            )
+              AS vendedor_titular,
+
+            reemplazo.id
+              AS reemplazo_id,
+
+            reemplazo.vendedor_reemplazo_id,
+
+            TRIM(
+              COALESCE(
+                vendedor_reemplazo.nombre,
+                ''
+              )
+              || ' ' ||
+              COALESCE(
+                vendedor_reemplazo.apellido,
+                ''
+              )
+            )
+              AS vendedor_reemplazo,
+
+            reemplazo.fecha_desde,
+
+            reemplazo.fecha_hasta,
+
+            reemplazo.motivo,
+
+            COALESCE(
+              reemplazo.vendedor_reemplazo_id,
+              r.vendedor_id
+            )
+              AS vendedor_efectivo_id,
+
+            CASE
+
+              WHEN reemplazo.id IS NOT NULL
+              THEN
+                TRIM(
+                  COALESCE(
+                    vendedor_reemplazo.nombre,
+                    ''
+                  )
+                  || ' ' ||
+                  COALESCE(
+                    vendedor_reemplazo.apellido,
+                    ''
+                  )
+                )
+
+              ELSE
+                TRIM(
+                  COALESCE(
+                    titular.nombre,
+                    ''
+                  )
+                  || ' ' ||
+                  COALESCE(
+                    titular.apellido,
+                    ''
+                  )
+                )
+
+            END
+              AS vendedor_efectivo,
+
+            CASE
+
+              WHEN reemplazo.id IS NOT NULL
+              THEN 'REEMPLAZO'
+
+              ELSE 'TITULAR'
+
+            END
+              AS origen_vendedor
+
+          FROM rutas r
+
+          LEFT JOIN usuarios titular
+            ON titular.id =
+               r.vendedor_id
+
+          LEFT JOIN LATERAL (
+
+            SELECT
+              rr.*
+
+            FROM reemplazos_ruta rr
+
+            WHERE
+              rr.ruta_id = r.id
+
+              AND rr.activo = true
+
+              AND
+              COALESCE(
+                $2::date,
+                CURRENT_DATE
+              )
+              BETWEEN
+                rr.fecha_desde
+              AND
+                rr.fecha_hasta
+
+            ORDER BY
+              rr.created_at DESC
+
+            LIMIT 1
+
+          ) reemplazo
+            ON true
+
+          LEFT JOIN usuarios
+            vendedor_reemplazo
+
+            ON vendedor_reemplazo.id =
+               reemplazo.vendedor_reemplazo_id
+
+          WHERE
+            r.id = $1
+
+            AND r.activo = true
+
+          LIMIT 1
+          `,
+          [
+            ruta_id,
+            fechaConsulta
+          ]
+        );
+
+      if (
+        rutaResult.rows.length === 0
+      ) {
+        return res.status(404).json({
+          error:
+            "Ruta no encontrada"
+        });
+      }
+
+      const ruta =
+        rutaResult.rows[0];
+
+      /*
+      =================================
+      CLIENTES PROGRAMADOS DE LA RUTA
+      =================================
+      */
+
+      const result =
+        await db.query(
+          `
+          WITH parametros AS (
+
+            SELECT
+              COALESCE(
+                $2::date,
+                CURRENT_DATE
+              )
+                AS fecha_consulta
+
+          ),
+
+          programados AS (
+
+            SELECT DISTINCT
+
+              c.id
+                AS cliente_id
+
+            FROM clientes c
+
+            LEFT JOIN frecuencias fr
+              ON fr.id =
+                 c.frecuencia_id
+
+            CROSS JOIN parametros p
+
+            WHERE
+
+              c.deleted_at IS NULL
+
+              AND c.activo = true
+
+              AND c.ruta_id = $1
+
+              AND (
+
+                (
+                  EXTRACT(
+                    ISODOW
+                    FROM p.fecha_consulta
+                  ) = 1
+
+                  AND fr.lunes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW
+                    FROM p.fecha_consulta
+                  ) = 2
+
+                  AND fr.martes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW
+                    FROM p.fecha_consulta
+                  ) = 3
+
+                  AND fr.miercoles = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW
+                    FROM p.fecha_consulta
+                  ) = 4
+
+                  AND fr.jueves = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW
+                    FROM p.fecha_consulta
+                  ) = 5
+
+                  AND fr.viernes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW
+                    FROM p.fecha_consulta
+                  ) = 6
+
+                  AND fr.sabado = true
+                )
+
+              )
+
+          ),
+
+          visitas_dia AS (
+
+            SELECT
+
+              v.cliente_id,
+
+              MIN(
+                v.hora_llegada
+              )
+                AS hora_llegada,
+
+              MAX(
+                v.hora_salida
+              )
+                AS hora_salida,
+
+              SUM(
+                COALESCE(
+                  v.permanencia_segundos,
+                  0
+                )
+              )::int
+                AS permanencia_segundos,
+
+              COUNT(*)::int
+                AS cantidad_visitas,
+
+              STRING_AGG(
+
+                DISTINCT
+
+                TRIM(
+                  COALESCE(
+                    usuario_visita.nombre,
+                    ''
+                  )
+                  || ' ' ||
+                  COALESCE(
+                    usuario_visita.apellido,
+                    ''
+                  )
+                ),
+
+                ', '
+
+              )
+                AS vendedores_visita
+
+            FROM visitas v
+
+            INNER JOIN clientes c
+              ON c.id =
+                 v.cliente_id
+
+            LEFT JOIN usuarios
+              usuario_visita
+
+              ON usuario_visita.id =
+                 v.vendedor_id
+
+            CROSS JOIN parametros p
+
+            WHERE
+
+              v.fecha =
+                p.fecha_consulta
+
+              AND c.ruta_id = $1
+
+              AND c.deleted_at
+                  IS NULL
+
+            GROUP BY
+              v.cliente_id
+
+          ),
+
+          universo AS (
+
+            SELECT
+              cliente_id
+
+            FROM programados
+
+            UNION
+
+            SELECT
+              cliente_id
+
+            FROM visitas_dia
+
+          )
+
+          SELECT
+
+            c.id,
+
+            c.codigo_cliente,
+
+            c.nombre,
+
+            c.direccion,
+
+            c.localidad,
+
+            c.latitud,
+
+            c.longitud,
+
+            c.radio_geocerca,
+
+            ca.nombre
+              AS canal,
+
+            fr.nombre
+              AS frecuencia,
+
+            r.nombre
+              AS ruta,
+
+            (
+              programados.cliente_id
+              IS NOT NULL
+            )
+              AS programado,
+
+            (
+              visitas_dia.cliente_id
+              IS NOT NULL
+            )
+              AS visitado,
+
+            visitas_dia.hora_llegada,
+
+            visitas_dia.hora_salida,
+
+            COALESCE(
+              visitas_dia.permanencia_segundos,
+              0
+            )::int
+              AS permanencia_segundos,
+
+            COALESCE(
+              visitas_dia.cantidad_visitas,
+              0
+            )::int
+              AS cantidad_visitas,
+
+            visitas_dia.vendedores_visita,
+
+            CASE
+
+              WHEN
+                c.latitud IS NULL
+
+                OR c.longitud IS NULL
+
+                OR c.latitud = 0
+
+                OR c.longitud = 0
+
+              THEN false
+
+              ELSE true
+
+            END
+              AS tiene_coordenadas
+
+          FROM universo
+
+          INNER JOIN clientes c
+
+            ON c.id =
+               universo.cliente_id
+
+          LEFT JOIN programados
+
+            ON programados.cliente_id =
+               c.id
+
+          LEFT JOIN visitas_dia
+
+            ON visitas_dia.cliente_id =
+               c.id
+
+          LEFT JOIN canales ca
+
+            ON ca.id =
+               c.canal_id
+
+          LEFT JOIN frecuencias fr
+
+            ON fr.id =
+               c.frecuencia_id
+
+          LEFT JOIN rutas r
+
+            ON r.id =
+               c.ruta_id
+
+          WHERE
+            c.deleted_at IS NULL
+
+          ORDER BY
+
+            CASE
+
+              WHEN
+                visitas_dia.cliente_id
+                IS NOT NULL
+
+              THEN 1
+
+              ELSE 0
+
+            END,
+
+            c.nombre ASC
+          `,
+          [
+            ruta_id,
+            fechaConsulta
+          ]
+        );
+
+      const clientes =
+        result.rows;
+
+      /*
+      =================================
+      RESUMEN
+      =================================
+      */
+
+      const programados =
+        clientes.filter(
+          function(cliente) {
+            return cliente.programado;
+          }
+        ).length;
+
+      const visitados =
+        clientes.filter(
+          function(cliente) {
+            return (
+              cliente.programado &&
+              cliente.visitado
+            );
+          }
+        ).length;
+
+      const pendientes =
+        clientes.filter(
+          function(cliente) {
+            return (
+              cliente.programado &&
+              !cliente.visitado
+            );
+          }
+        ).length;
+
+      const sinCoordenadas =
+        clientes.filter(
+          function(cliente) {
+            return (
+              cliente.programado &&
+              !cliente.tiene_coordenadas
+            );
+          }
+        ).length;
+
+      const noProgramadosVisitados =
+        clientes.filter(
+          function(cliente) {
+            return (
+              !cliente.programado &&
+              cliente.visitado
+            );
+          }
+        ).length;
+
+      const permanenciaTotal =
+        clientes.reduce(
+          function(
+            acumulado,
+            cliente
+          ) {
+
+            return (
+              acumulado +
+              Number(
+                cliente
+                  .permanencia_segundos
+                || 0
+              )
+            );
+
+          },
+          0
+        );
+
+      let cobertura = 0;
+
+      if (programados > 0) {
+
+        cobertura =
+          Math.round(
+            (
+              visitados /
+              programados
+            )
+            * 100
+          );
+
+      }
+
+      /*
+      =================================
+      RESPUESTA
+      =================================
+      */
+
+      res.json({
+
+        fecha:
+          fechaConsulta ||
+          new Date()
+            .toISOString()
+            .slice(0, 10),
+
+        ruta: ruta,
+
+        resumen: {
+
+          total:
+            programados,
+
+          programados:
+            programados,
+
+          visitados:
+            visitados,
+
+          pendientes:
+            pendientes,
+
+          sin_coordenadas:
+            sinCoordenadas,
+
+          no_programados_visitados:
+            noProgramadosVisitados,
+
+          permanencia_total_segundos:
+            permanenciaTotal,
+
+          cobertura_porcentaje:
+            cobertura
+
+        },
+
+        clientes:
+          clientes
+
+      });
+
+    } catch (error) {
+
+      console.error(
+        "ERROR PLAN DE TRABAJO POR RUTA:",
+        error
+      );
+
+      res.status(500).json({
+
+        error:
+          "Error al obtener el plan de trabajo por ruta",
+
+        detalle:
+          error.message
+
+      });
+
+    }
+  }
+);
+
+/*
+=================================
 PLAN DE TRABAJO POR VENDEDOR Y FECHA
 =================================
 */
