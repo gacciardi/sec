@@ -660,7 +660,7 @@ router.get(
 
               AND c.activo = true
 
-              AND ced.ruta_id = $1
+              AND c.ruta_id = $1
 
               AND (
 
