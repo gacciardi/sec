@@ -831,7 +831,7 @@ router.get(
 
               AND c.activo = true
 
-              AND c.ruta_id = $1
+              AND ced.ruta_id = $1
 
           ),
 
