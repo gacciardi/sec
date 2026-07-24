@@ -718,10 +718,40 @@ router.post(
             Si no hay ruta, se puede asignar
             directamente al cliente.
             */
+            /*
+            Regla única de asignación:
+
+            - Si el cliente tiene ruta, el vendedor se obtiene
+              exclusivamente desde la ruta y vendedor_id queda NULL.
+
+            - Si el cliente no tiene ruta, se permite la asignación
+              directa al vendedor.
+
+            Esto evita conservar vendedores antiguos cuando un cliente
+            cambia de vendedor o pasa a formar parte de una ruta.
+            */
+            /*
+            Primero determinamos la ruta final del cliente.
+            Si el Excel trae ruta, usamos esa.
+            Si no trae ruta, conservamos la ruta existente.
+            */
+            const rutaFinalId =
+              rutaId ??
+              clienteActual.ruta_id;
+
+            /*
+            Regla única de asignación:
+
+            - Si el cliente tiene una ruta final, vendedor_id queda NULL
+              y el vendedor efectivo se toma exclusivamente de la ruta.
+
+            - Solo si el cliente NO tiene ruta final se permite
+              vendedor_id directo.
+            */
             let vendedorDirecto = null;
 
             if (
-              !rutaId &&
+              !rutaFinalId &&
               vendedor
             ) {
               vendedorDirecto =
@@ -769,8 +799,7 @@ router.post(
                 clienteActual.canal_id,
 
               ruta_id:
-                rutaId ??
-                clienteActual.ruta_id,
+                rutaFinalId,
 
               vendedor_id:
                 vendedorDirecto,
