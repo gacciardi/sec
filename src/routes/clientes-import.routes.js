@@ -718,40 +718,10 @@ router.post(
             Si no hay ruta, se puede asignar
             directamente al cliente.
             */
-            /*
-            Regla única de asignación:
-
-            - Si el cliente tiene ruta, el vendedor se obtiene
-              exclusivamente desde la ruta y vendedor_id queda NULL.
-
-            - Si el cliente no tiene ruta, se permite la asignación
-              directa al vendedor.
-
-            Esto evita conservar vendedores antiguos cuando un cliente
-            cambia de vendedor o pasa a formar parte de una ruta.
-            */
-            /*
-            Primero determinamos la ruta final del cliente.
-            Si el Excel trae ruta, usamos esa.
-            Si no trae ruta, conservamos la ruta existente.
-            */
-            const rutaFinalId =
-              rutaId ??
-              clienteActual.ruta_id;
-
-            /*
-            Regla única de asignación:
-
-            - Si el cliente tiene una ruta final, vendedor_id queda NULL
-              y el vendedor efectivo se toma exclusivamente de la ruta.
-
-            - Solo si el cliente NO tiene ruta final se permite
-              vendedor_id directo.
-            */
             let vendedorDirecto = null;
 
             if (
-              !rutaFinalId &&
+              !rutaId &&
               vendedor
             ) {
               vendedorDirecto =
@@ -764,6 +734,26 @@ router.post(
                 clientesAsignadosDirectamente++;
               }
             }
+
+            /*
+            IMPORTANTE:
+            Las coordenadas corregidas desde SEC tienen prioridad.
+            Si el cliente ya posee latitud y longitud válidas en la
+            base, el importador NO las reemplaza por las del archivo.
+            Solamente toma las coordenadas importadas cuando el cliente
+            todavía no tiene coordenadas válidas guardadas.
+            */
+            const latitudActual =
+              normalizarNumero(clienteActual.latitud);
+
+            const longitudActual =
+              normalizarNumero(clienteActual.longitud);
+
+            const tieneCoordenadasActuales =
+              latitudActual !== null &&
+              longitudActual !== null &&
+              latitudActual !== 0 &&
+              longitudActual !== 0;
 
             const valoresNuevos = {
               nombre:
@@ -779,12 +769,14 @@ router.post(
                 clienteActual.localidad,
 
               latitud:
-                coordenadas.latitud ??
-                clienteActual.latitud,
+                tieneCoordenadasActuales
+                  ? clienteActual.latitud
+                  : coordenadas.latitud,
 
               longitud:
-                coordenadas.longitud ??
-                clienteActual.longitud,
+                tieneCoordenadasActuales
+                  ? clienteActual.longitud
+                  : coordenadas.longitud,
 
               categoria:
                 categoria ??
@@ -799,7 +791,8 @@ router.post(
                 clienteActual.canal_id,
 
               ruta_id:
-                rutaFinalId,
+                rutaId ??
+                clienteActual.ruta_id,
 
               vendedor_id:
                 vendedorDirecto,
