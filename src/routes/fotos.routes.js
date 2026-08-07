@@ -283,25 +283,7 @@ router.post(
                 crypto.randomUUID()
               )}`,
 
-            resource_type: "image",
-            overwrite: false,
-            unique_filename: false,
-            use_filename: false,
-
-            transformation: [
-              {
-                quality: "auto:good",
-                fetch_format: "auto"
-              }
-            ],
-
-            context: {
-              evidencia_id: idEvidencia,
-              vendedor_id: vendedorId,
-              cliente_id: clienteId || "",
-              visita_id: visitaId || "",
-              tipo_foto: tipoFoto
-            }
+            resource_type: "image"
           }
         );
 
