@@ -3,7 +3,6 @@ const multer = require("multer");
 const crypto = require("crypto");
 
 const db = require("../config/database");
-const cloudinary = require("../config/cloudinary");
 
 const router = express.Router();
 
@@ -79,22 +78,119 @@ function limpiarSegmento(valor, reemplazo) {
     .slice(0, 100);
 }
 
-function subirBufferCloudinary(buffer, opciones) {
-  return new Promise((resolve, reject) => {
-    const stream = cloudinary.uploader.upload_stream(
-      opciones,
-      (error, resultado) => {
-        if (error) {
-          reject(error);
-          return;
-        }
+async function subirBufferCloudinary(buffer, opciones) {
+  const cloudName =
+    process.env.CLOUDINARY_CLOUD_NAME;
 
-        resolve(resultado);
+  const apiKey =
+    process.env.CLOUDINARY_API_KEY;
+
+  const apiSecret =
+    process.env.CLOUDINARY_API_SECRET;
+
+  if (
+    !cloudName ||
+    !apiKey ||
+    !apiSecret
+  ) {
+    throw new Error(
+      "Faltan credenciales de Cloudinary en las variables de entorno"
+    );
+  }
+
+  const url =
+    `https://api.cloudinary.com/v1_1/${encodeURIComponent(
+      cloudName
+    )}/image/upload`;
+
+  const auth =
+    Buffer.from(
+      `${apiKey}:${apiSecret}`,
+      "utf8"
+    ).toString("base64");
+
+  const formulario =
+    new FormData();
+
+  const archivo =
+    new Blob(
+      [buffer],
+      {
+        type: "image/jpeg"
       }
     );
 
-    stream.end(buffer);
-  });
+  formulario.append(
+    "file",
+    archivo,
+    "evidencia.jpg"
+  );
+
+  if (opciones.folder) {
+    formulario.append(
+      "folder",
+      opciones.folder
+    );
+  }
+
+  if (opciones.public_id) {
+    formulario.append(
+      "public_id",
+      opciones.public_id
+    );
+  }
+
+  const respuesta =
+    await fetch(
+      url,
+      {
+        method: "POST",
+        headers: {
+          Authorization:
+            `Basic ${auth}`
+        },
+        body: formulario
+      }
+    );
+
+  const cuerpoTexto =
+    await respuesta.text();
+
+  let cuerpoJson;
+
+  try {
+    cuerpoJson =
+      cuerpoTexto
+        ? JSON.parse(cuerpoTexto)
+        : {};
+  } catch (_) {
+    cuerpoJson = {
+      raw: cuerpoTexto
+    };
+  }
+
+  if (!respuesta.ok) {
+    const detalle =
+      cuerpoJson?.error?.message ||
+      cuerpoJson?.message ||
+      cuerpoTexto ||
+      `HTTP ${respuesta.status}`;
+
+    const error =
+      new Error(
+        `Cloudinary respondió ${respuesta.status}: ${detalle}`
+      );
+
+    error.http_code =
+      respuesta.status;
+
+    error.respuesta_cloudinary =
+      cuerpoJson;
+
+    throw error;
+  }
+
+  return cuerpoJson;
 }
 
 /*
