@@ -80,13 +80,26 @@ function limpiarSegmento(valor, reemplazo) {
 
 async function subirBufferCloudinary(buffer, opciones) {
   const cloudName =
-    process.env.CLOUDINARY_CLOUD_NAME;
+    (process.env.CLOUDINARY_CLOUD_NAME || "").trim();
 
   const apiKey =
-    process.env.CLOUDINARY_API_KEY;
+    (process.env.CLOUDINARY_API_KEY || "").trim();
 
   const apiSecret =
-    process.env.CLOUDINARY_API_SECRET;
+    (process.env.CLOUDINARY_API_SECRET || "").trim();
+
+  console.log("========== CLOUDINARY ENV ==========");
+  console.log("CLOUD NAME:", cloudName);
+  console.log("API KEY:", apiKey);
+  console.log(
+    "SECRET LARGO RAW:",
+    (process.env.CLOUDINARY_API_SECRET || "").length
+  );
+  console.log(
+    "SECRET LARGO TRIM:",
+    apiSecret.length
+  );
+  console.log("====================================");
 
   if (
     !cloudName ||
