@@ -138,6 +138,13 @@ router.get("/", async (req, res) => {
         )::int AS pendientes_hoy,
         COALESCE(ct.sin_coordenadas, 0)::int AS sin_coordenadas,
         COALESCE(ct.sin_frecuencia, 0)::int AS sin_frecuencia,
+        CASE WHEN r.vendedor_id IS NULL THEN true ELSE false END AS alerta_sin_vendedor,
+        CASE WHEN COALESCE(ct.sin_frecuencia, 0) > 0 THEN true ELSE false END AS alerta_sin_frecuencia,
+        CASE WHEN COALESCE(ct.sin_coordenadas, 0) > 0 THEN true ELSE false END AS alerta_sin_coordenadas,
+        CASE
+          WHEN r.activo = false AND COALESCE(ct.clientes_activos, 0) > 0
+          THEN true ELSE false
+        END AS alerta_ruta_inactiva,
         (
           CASE WHEN r.vendedor_id IS NULL THEN 1 ELSE 0 END
           +
@@ -196,7 +203,25 @@ router.get("/", async (req, res) => {
             AND c.ruta_id IS NOT NULL
             AND r.id IS NOT NULL
             AND r.activo = false
-        )::int AS en_ruta_inactiva
+        )::int AS en_ruta_inactiva,
+        COUNT(DISTINCT r.id) FILTER (
+          WHERE r.id IS NOT NULL
+            AND r.activo = true
+            AND r.vendedor_id IS NULL
+        )::int AS rutas_sin_vendedor,
+        COUNT(*) FILTER (
+          WHERE c.deleted_at IS NULL
+            AND c.activo = true
+            AND r.id IS NOT NULL
+            AND r.activo = true
+            AND r.vendedor_id IS NULL
+        )::int AS clientes_en_rutas_sin_vendedor,
+        COUNT(DISTINCT r.id) FILTER (
+          WHERE r.id IS NOT NULL
+            AND r.activo = false
+            AND c.deleted_at IS NULL
+            AND c.activo = true
+        )::int AS rutas_inactivas_con_clientes
       FROM clientes c
       LEFT JOIN rutas r ON r.id = c.ruta_id
       `
