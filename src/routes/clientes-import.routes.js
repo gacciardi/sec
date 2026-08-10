@@ -1,10 +1,17 @@
 const express = require("express");
 const multer = require("multer");
 const XLSX = require("xlsx");
+const fs = require("fs");
 const db = require("../config/database");
 
 const router = express.Router();
-const upload = multer({ dest: "uploads/" });
+
+const upload = multer({
+  dest: "uploads/",
+  limits: {
+    fileSize: 25 * 1024 * 1024
+  }
+});
 
 /*
 =================================
@@ -24,6 +31,22 @@ function valorCampo(fila, nombre) {
   );
 
   return clave ? fila[clave] : null;
+}
+
+function valorCampoMultiple(fila, nombres) {
+  for (const nombre of nombres) {
+    const valor = valorCampo(fila, nombre);
+
+    if (
+      valor !== null &&
+      valor !== undefined &&
+      String(valor).trim() !== ""
+    ) {
+      return valor;
+    }
+  }
+
+  return null;
 }
 
 function limpiarTexto(valor) {
@@ -54,6 +77,7 @@ function normalizarTextoComparacion(valor) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase()
+    .replace(/[.,;:()[\]{}"'`´]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -124,11 +148,112 @@ function normalizarCoordenadas(
     invertidas = true;
   }
 
+  /*
+  Argentina:
+  latitud aprox. -55 a -21
+  longitud aprox. -73 a -53.
+  No descartamos coordenadas fuera de Argentina porque
+  SEC podría usarse en otras zonas, pero sí rechazamos
+  valores imposibles para GPS.
+  */
+  if (
+    latitud !== null &&
+    (latitud < -90 || latitud > 90)
+  ) {
+    latitud = null;
+  }
+
+  if (
+    longitud !== null &&
+    (longitud < -180 || longitud > 180)
+  ) {
+    longitud = null;
+  }
+
   return {
     latitud,
     longitud,
     invertidas
   };
+}
+
+function tokensNombre(valor) {
+  const normalizado =
+    normalizarTextoComparacion(valor);
+
+  if (!normalizado) {
+    return [];
+  }
+
+  return normalizado
+    .split(" ")
+    .filter(Boolean);
+}
+
+function todosLosTokensEstan(
+  tokensBuscados,
+  tokensCandidato
+) {
+  if (
+    tokensBuscados.length === 0 ||
+    tokensCandidato.length === 0
+  ) {
+    return false;
+  }
+
+  return tokensBuscados.every(
+    token =>
+      tokensCandidato.includes(token)
+  );
+}
+
+function nombresCompatibles(
+  nombreExcel,
+  nombreUsuario
+) {
+  const excel =
+    normalizarTextoComparacion(
+      nombreExcel
+    );
+
+  const usuario =
+    normalizarTextoComparacion(
+      nombreUsuario
+    );
+
+  if (!excel || !usuario) {
+    return false;
+  }
+
+  if (excel === usuario) {
+    return true;
+  }
+
+  const tokensExcel =
+    tokensNombre(excel);
+
+  const tokensUsuario =
+    tokensNombre(usuario);
+
+  /*
+  Permite casos seguros como:
+  "ROCIO URANGA"
+  contra
+  "ROCIO URANGA DEL CAMPO"
+
+  También funciona aunque el orden sea:
+  "URANGA ROCIO"
+  */
+  return (
+    todosLosTokensEstan(
+      tokensExcel,
+      tokensUsuario
+    ) ||
+    todosLosTokensEstan(
+      tokensUsuario,
+      tokensExcel
+    )
+  );
 }
 
 /*
@@ -187,7 +312,8 @@ async function obtenerOCrearRuta(valor) {
     return {
       rutaId: null,
       creada: false,
-      nombre: null
+      nombre: null,
+      vendedorIdActual: null
     };
   }
 
@@ -196,7 +322,8 @@ async function obtenerOCrearRuta(valor) {
     SELECT
       id,
       nombre,
-      vendedor_id
+      vendedor_id,
+      activo
     FROM rutas
     WHERE UPPER(TRIM(nombre)) =
           UPPER(TRIM($1))
@@ -206,6 +333,23 @@ async function obtenerOCrearRuta(valor) {
   );
 
   if (result.rows.length > 0) {
+    /*
+    Si la ruta aparece en el maestro actual,
+    se considera una ruta vigente.
+    */
+    if (result.rows[0].activo === false) {
+      await db.query(
+        `
+        UPDATE rutas
+        SET
+          activo = true,
+          updated_at = NOW()
+        WHERE id = $1
+        `,
+        [result.rows[0].id]
+      );
+    }
+
     return {
       rutaId: result.rows[0].id,
       creada: false,
@@ -253,46 +397,112 @@ async function cargarVendedores() {
     `
   );
 
-  return result.rows.map(vendedor => {
-    const nombreCompleto =
-      limpiarTexto(
-        `${vendedor.nombre || ""} ${vendedor.apellido || ""}`
-      ) || "";
+  return result.rows.map(
+    vendedor => {
+      const nombreCompleto =
+        limpiarTexto(
+          `${vendedor.nombre || ""} ${vendedor.apellido || ""}`
+        ) || "";
 
-    const apellidoNombre =
-      limpiarTexto(
-        `${vendedor.apellido || ""} ${vendedor.nombre || ""}`
-      ) || "";
+      const apellidoNombre =
+        limpiarTexto(
+          `${vendedor.apellido || ""} ${vendedor.nombre || ""}`
+        ) || "";
 
-    return {
-      ...vendedor,
+      return {
+        ...vendedor,
 
-      nombre_completo:
-        nombreCompleto,
+        nombre_completo:
+          nombreCompleto,
 
-      clave_nombre:
-        normalizarTextoComparacion(
-          nombreCompleto
-        ),
+        apellido_nombre:
+          apellidoNombre,
 
-      clave_apellido_nombre:
-        normalizarTextoComparacion(
-          apellidoNombre
-        )
-    };
-  });
+        clave_nombre:
+          normalizarTextoComparacion(
+            nombreCompleto
+          ),
+
+        clave_apellido_nombre:
+          normalizarTextoComparacion(
+            apellidoNombre
+          ),
+
+        legajo_normalizado:
+          normalizarCodigo(
+            vendedor.legajo
+          )
+      };
+    }
+  );
 }
 
-function buscarVendedorPorNombre(
+function buscarVendedor(
   vendedores,
-  valorExcel
+  fila
 ) {
+  /*
+  Si en algún momento el maestro incorpora
+  legajo, esta búsqueda tiene prioridad porque
+  es inequívoca.
+  */
+  const legajoExcel =
+    normalizarCodigo(
+      valorCampoMultiple(
+        fila,
+        [
+          "legajo",
+          "legajo_vendedor",
+          "vendedor_legajo",
+          "legajo vendedor"
+        ]
+      )
+    );
+
+  if (legajoExcel) {
+    const porLegajo =
+      vendedores.filter(
+        vendedor =>
+          vendedor.legajo_normalizado ===
+          legajoExcel
+      );
+
+    if (porLegajo.length === 1) {
+      return {
+        vendedor: porLegajo[0],
+        metodo: "LEGAJO",
+        valorBuscado: legajoExcel,
+        coincidencias: porLegajo
+      };
+    }
+
+    if (porLegajo.length > 1) {
+      return {
+        vendedor: null,
+        metodo: "LEGAJO_AMBIGUO",
+        valorBuscado: legajoExcel,
+        coincidencias: porLegajo
+      };
+    }
+  }
+
   const nombreExcel =
-    limpiarTexto(valorExcel);
+    limpiarTexto(
+      valorCampoMultiple(
+        fila,
+        [
+          "vendedor",
+          "vendedor_nombre",
+          "nombre_vendedor",
+          "vendedor nombre"
+        ]
+      )
+    );
 
   if (!nombreExcel) {
     return {
       vendedor: null,
+      metodo: "SIN_DATO",
       valorBuscado: null,
       coincidencias: []
     };
@@ -303,23 +513,167 @@ function buscarVendedorPorNombre(
       nombreExcel
     );
 
-  const coincidencias =
-    vendedores.filter(vendedor =>
-      vendedor.clave_nombre === clave ||
-      vendedor.clave_apellido_nombre === clave
+  /*
+  1. Coincidencia exacta:
+  Nombre Apellido
+  o
+  Apellido Nombre
+  */
+  const exactas =
+    vendedores.filter(
+      vendedor =>
+        vendedor.clave_nombre === clave ||
+        vendedor.clave_apellido_nombre === clave
     );
 
+  if (exactas.length === 1) {
+    return {
+      vendedor: exactas[0],
+      metodo: "NOMBRE_EXACTO",
+      valorBuscado: nombreExcel,
+      coincidencias: exactas
+    };
+  }
+
+  if (exactas.length > 1) {
+    return {
+      vendedor: null,
+      metodo: "NOMBRE_EXACTO_AMBIGUO",
+      valorBuscado: nombreExcel,
+      coincidencias: exactas
+    };
+  }
+
+  /*
+  2. Coincidencia flexible, pero segura:
+  todos los tokens de uno deben estar incluidos
+  en el otro.
+
+  Ejemplo:
+  Excel: "Rocio Uranga"
+  Usuario: "Rocio Uranga del Campo"
+  */
+  const flexibles =
+    vendedores.filter(
+      vendedor =>
+        nombresCompatibles(
+          nombreExcel,
+          vendedor.nombre_completo
+        ) ||
+        nombresCompatibles(
+          nombreExcel,
+          vendedor.apellido_nombre
+        )
+    );
+
+  if (flexibles.length === 1) {
+    return {
+      vendedor: flexibles[0],
+      metodo: "NOMBRE_FLEXIBLE",
+      valorBuscado: nombreExcel,
+      coincidencias: flexibles
+    };
+  }
+
   return {
-    vendedor:
-      coincidencias.length === 1
-        ? coincidencias[0]
-        : null,
-
-    valorBuscado:
-      nombreExcel,
-
-    coincidencias
+    vendedor: null,
+    metodo:
+      flexibles.length > 1
+        ? "NOMBRE_FLEXIBLE_AMBIGUO"
+        : "NO_ENCONTRADO",
+    valorBuscado: nombreExcel,
+    coincidencias: flexibles
   };
+}
+
+function agregarCandidatoRuta(
+  mapa,
+  rutaResultado,
+  vendedorResultado,
+  codigoCliente
+) {
+  if (!rutaResultado.rutaId) {
+    return;
+  }
+
+  if (
+    !mapa.has(
+      rutaResultado.rutaId
+    )
+  ) {
+    mapa.set(
+      rutaResultado.rutaId,
+      {
+        rutaId:
+          rutaResultado.rutaId,
+
+        ruta:
+          rutaResultado.nombre,
+
+        vendedorIdAnterior:
+          rutaResultado.vendedorIdActual,
+
+        vendedoresIds:
+          new Set(),
+
+        vendedoresExcel:
+          new Set(),
+
+        vendedoresResueltos:
+          new Map(),
+
+        clientes:
+          0,
+
+        clientesConVendedor:
+          0,
+
+        clientesSinVendedor:
+          0,
+
+        ejemplosClientes:
+          []
+      }
+    );
+  }
+
+  const registro =
+    mapa.get(
+      rutaResultado.rutaId
+    );
+
+  registro.clientes++;
+
+  if (
+    registro.ejemplosClientes.length < 5
+  ) {
+    registro.ejemplosClientes.push(
+      codigoCliente
+    );
+  }
+
+  if (
+    vendedorResultado.valorBuscado
+  ) {
+    registro.vendedoresExcel.add(
+      vendedorResultado.valorBuscado
+    );
+  }
+
+  if (vendedorResultado.vendedor) {
+    registro.clientesConVendedor++;
+
+    registro.vendedoresIds.add(
+      vendedorResultado.vendedor.id
+    );
+
+    registro.vendedoresResueltos.set(
+      vendedorResultado.vendedor.id,
+      vendedorResultado.vendedor.nombre_completo
+    );
+  } else {
+    registro.clientesSinVendedor++;
+  }
 }
 
 /*
@@ -332,6 +686,8 @@ router.post(
   "/",
   upload.single("archivo"),
   async (req, res) => {
+    let archivoTemporal = null;
+
     try {
       if (!req.file) {
         return res.status(400).json({
@@ -340,8 +696,13 @@ router.post(
         });
       }
 
+      archivoTemporal =
+        req.file.path;
+
       const workbook =
-        XLSX.readFile(req.file.path);
+        XLSX.readFile(
+          req.file.path
+        );
 
       const hoja =
         workbook.Sheets[
@@ -356,6 +717,34 @@ router.post(
           }
         );
 
+      if (filas.length === 0) {
+        return res.status(400).json({
+          error:
+            "El archivo Excel no contiene filas para importar"
+        });
+      }
+
+      const primeraFila =
+        filas[0];
+
+      const tieneCodigoCliente =
+        Object.keys(
+          primeraFila
+        ).some(
+          clave =>
+            String(clave)
+              .trim()
+              .toLowerCase() ===
+            "codigo_cliente"
+        );
+
+      if (!tieneCodigoCliente) {
+        return res.status(400).json({
+          error:
+            'El Excel debe contener la columna "codigo_cliente"'
+        });
+      }
+
       const vendedores =
         await cargarVendedores();
 
@@ -368,10 +757,20 @@ router.post(
 
       let rutasCreadas = 0;
       let rutasAsignadas = 0;
+      let rutasSinCambio = 0;
+      let rutasConConflicto = 0;
+      let rutasSinVendedorExcel = 0;
+
       let clientesAsignadosDirectamente = 0;
 
       let sinCoordenadas = 0;
       let coordenadasInvertidas = 0;
+
+      let vendedoresExactos = 0;
+      let vendedoresFlexibles = 0;
+      let vendedoresPorLegajo = 0;
+      let vendedoresNoEncontrados = 0;
+      let vendedoresAmbiguos = 0;
 
       const errores = [];
       const advertencias = [];
@@ -381,10 +780,14 @@ router.post(
         new Set();
 
       /*
-      Evita que dentro del mismo Excel una ruta
-      sea asignada a dos vendedores diferentes.
+      Acumulamos la relación Ruta -> Vendedor
+      durante toda la lectura y recién al final
+      actualizamos la tabla rutas.
+
+      Esto evita que "gane el primero" si el Excel
+      tiene una inconsistencia.
       */
-      const asignacionesRuta =
+      const auditoriaRutas =
         new Map();
 
       for (
@@ -503,7 +906,9 @@ router.post(
             );
 
           if (
-            limpiarTexto(frecuenciaExcel) &&
+            limpiarTexto(
+              frecuenciaExcel
+            ) &&
             !frecuenciaId
           ) {
             advertencias.push({
@@ -517,7 +922,9 @@ router.post(
           }
 
           if (
-            limpiarTexto(canalExcel) &&
+            limpiarTexto(
+              canalExcel
+            ) &&
             !canalId
           ) {
             advertencias.push({
@@ -547,60 +954,40 @@ router.post(
             rutasCreadas++;
           }
 
-          /*
-          La columna del Excel debe llamarse:
-          vendedor
-          */
           const vendedorResultado =
-            buscarVendedorPorNombre(
+            buscarVendedor(
               vendedores,
-              valorCampo(
-                fila,
-                "vendedor"
-              )
+              fila
             );
 
           const vendedor =
             vendedorResultado.vendedor;
 
-          if (
-            vendedorResultado.valorBuscado &&
-            vendedorResultado.coincidencias.length === 0
-          ) {
-            advertencias.push({
-              fila: numeroFila,
-              codigo_cliente:
-                codigoCliente,
-              vendedor:
-                vendedorResultado.valorBuscado,
-              motivo:
-                `No se encontró el vendedor ` +
-                `"${vendedorResultado.valorBuscado}" ` +
-                `en Usuarios`
-            });
-          }
-
-          if (
-            vendedorResultado.valorBuscado &&
-            vendedorResultado.coincidencias.length > 1
-          ) {
-            advertencias.push({
-              fila: numeroFila,
-              codigo_cliente:
-                codigoCliente,
-              vendedor:
-                vendedorResultado.valorBuscado,
-              motivo:
-                `Hay más de un vendedor que coincide ` +
-                `con "${vendedorResultado.valorBuscado}". ` +
-                `No se modificó la asignación.`
-            });
-          }
-
           if (vendedor) {
             vendedoresEncontrados.add(
               vendedor.id
             );
+
+            if (
+              vendedorResultado.metodo ===
+              "LEGAJO"
+            ) {
+              vendedoresPorLegajo++;
+            }
+
+            if (
+              vendedorResultado.metodo ===
+              "NOMBRE_EXACTO"
+            ) {
+              vendedoresExactos++;
+            }
+
+            if (
+              vendedorResultado.metodo ===
+              "NOMBRE_FLEXIBLE"
+            ) {
+              vendedoresFlexibles++;
+            }
 
             if (
               vendedor.activo === false
@@ -615,68 +1002,58 @@ router.post(
                   "El vendedor está inactivo, pero fue encontrado"
               });
             }
+          } else if (
+            vendedorResultado.valorBuscado
+          ) {
+            const ambiguo =
+              vendedorResultado.metodo
+                .includes("AMBIGUO");
+
+            if (ambiguo) {
+              vendedoresAmbiguos++;
+            } else {
+              vendedoresNoEncontrados++;
+            }
+
+            advertencias.push({
+              fila: numeroFila,
+              codigo_cliente:
+                codigoCliente,
+              vendedor:
+                vendedorResultado.valorBuscado,
+              coincidencias:
+                vendedorResultado
+                  .coincidencias
+                  .map(v =>
+                    v.nombre_completo
+                  ),
+              metodo:
+                vendedorResultado.metodo,
+              motivo:
+                ambiguo
+                  ? `El vendedor "${vendedorResultado.valorBuscado}" ` +
+                    `coincide con más de un usuario. No se asignó automáticamente.`
+                  : `No se encontró el vendedor ` +
+                    `"${vendedorResultado.valorBuscado}" en Usuarios`
+            });
           }
 
           /*
-          Si hay ruta y vendedor, la asignación
-          se realiza sobre la ruta.
+          Registramos la relación que trae el Excel
+          para auditarla al final.
           */
-          if (
-            rutaId &&
-            vendedor
-          ) {
-            const vendedorRutaPrevio =
-              asignacionesRuta.get(
-                rutaId
-              );
+          agregarCandidatoRuta(
+            auditoriaRutas,
+            rutaResultado,
+            vendedorResultado,
+            codigoCliente
+          );
 
-            if (
-              vendedorRutaPrevio &&
-              vendedorRutaPrevio !==
-                vendedor.id
-            ) {
-              advertencias.push({
-                fila: numeroFila,
-                codigo_cliente:
-                  codigoCliente,
-                motivo:
-                  `La ruta ${rutaResultado.nombre} ` +
-                  `aparece con más de un vendedor ` +
-                  `en el Excel. Se conservó el primero.`
-              });
-
-            } else {
-              asignacionesRuta.set(
-                rutaId,
-                vendedor.id
-              );
-
-              const cambioRuta =
-                await db.query(
-                  `
-                  UPDATE rutas
-                  SET
-                    vendedor_id = $1,
-                    activo = true,
-                    updated_at = NOW()
-                  WHERE id = $2
-                    AND vendedor_id
-                      IS DISTINCT FROM $1
-                  RETURNING id
-                  `,
-                  [
-                    vendedor.id,
-                    rutaId
-                  ]
-                );
-
-              if (
-                cambioRuta.rows.length > 0
-              ) {
-                rutasAsignadas++;
-              }
-            }
-          }
+          /*
+          =============================
+          BUSCAR CLIENTE EXISTENTE
+          =============================
+          */
 
           const existente =
             await db.query(
@@ -694,10 +1071,17 @@ router.post(
             );
 
           /*
-          =============================
-          ACTUALIZAR CLIENTE EXISTENTE
-          =============================
+          Si hay ruta, el vendedor efectivo se obtiene
+          desde la ruta.
+
+          Solo si NO hay ruta se guarda vendedor directo
+          en clientes.vendedor_id.
           */
+          const vendedorDirecto =
+            !rutaId &&
+            vendedor
+              ? vendedor.id
+              : null;
 
           if (
             existente.rows.length > 0
@@ -711,43 +1095,27 @@ router.post(
               reactivados++;
             }
 
-            /*
-            Si hay ruta, el vendedor efectivo
-            se obtiene desde la ruta.
-
-            Si no hay ruta, se puede asignar
-            directamente al cliente.
-            */
-            let vendedorDirecto = null;
-
             if (
-              !rutaId &&
-              vendedor
+              vendedorDirecto &&
+              clienteActual.vendedor_id !==
+                vendedorDirecto
             ) {
-              vendedorDirecto =
-                vendedor.id;
-
-              if (
-                clienteActual.vendedor_id !==
-                vendedor.id
-              ) {
-                clientesAsignadosDirectamente++;
-              }
+              clientesAsignadosDirectamente++;
             }
 
             /*
-            IMPORTANTE:
-            Las coordenadas corregidas desde SEC tienen prioridad.
-            Si el cliente ya posee latitud y longitud válidas en la
-            base, el importador NO las reemplaza por las del archivo.
-            Solamente toma las coordenadas importadas cuando el cliente
-            todavía no tiene coordenadas válidas guardadas.
+            Las coordenadas corregidas manualmente
+            desde SEC tienen prioridad.
             */
             const latitudActual =
-              normalizarNumero(clienteActual.latitud);
+              normalizarNumero(
+                clienteActual.latitud
+              );
 
             const longitudActual =
-              normalizarNumero(clienteActual.longitud);
+              normalizarNumero(
+                clienteActual.longitud
+              );
 
             const tieneCoordenadasActuales =
               latitudActual !== null &&
@@ -790,15 +1158,29 @@ router.post(
                 canalId ??
                 clienteActual.canal_id,
 
+              /*
+              Si el Excel trae ruta, manda el Excel.
+              Si no trae ruta, conservamos la existente.
+              */
               ruta_id:
                 rutaId ??
                 clienteActual.ruta_id,
 
+              /*
+              Si el cliente tiene ruta, NO se guarda
+              vendedor directo: la ruta es la fuente
+              operativa del vendedor.
+              */
               vendedor_id:
-                vendedorDirecto,
+                rutaId
+                  ? null
+                  : vendedorDirecto,
 
-              radio_geocerca: 30,
-              activo: true
+              radio_geocerca:
+                30,
+
+              activo:
+                true
             };
 
             const cambio =
@@ -911,11 +1293,6 @@ router.post(
             =============================
             */
 
-            const vendedorDirecto =
-              !rutaId && vendedor
-                ? vendedor.id
-                : null;
-
             await db.query(
               `
               INSERT INTO clientes (
@@ -989,9 +1366,154 @@ router.post(
       }
 
       /*
-      Los clientes que no aparecen en el nuevo
-      padrón quedan suspendidos.
+      =================================
+      RESOLVER RUTA -> VENDEDOR
+      =================================
       */
+
+      const detalleRutas = [];
+
+      for (
+        const registro
+        of auditoriaRutas.values()
+      ) {
+        const vendedoresIds =
+          [...registro.vendedoresIds];
+
+        const vendedoresExcel =
+          [...registro.vendedoresExcel];
+
+        if (
+          vendedoresIds.length === 1
+        ) {
+          const vendedorId =
+            vendedoresIds[0];
+
+          const cambioRuta =
+            await db.query(
+              `
+              UPDATE rutas
+              SET
+                vendedor_id = $1,
+                activo = true,
+                updated_at =
+                  CASE
+                    WHEN vendedor_id
+                      IS DISTINCT FROM $1
+                    THEN NOW()
+                    ELSE updated_at
+                  END
+              WHERE id = $2
+              RETURNING
+                id,
+                nombre,
+                vendedor_id
+              `,
+              [
+                vendedorId,
+                registro.rutaId
+              ]
+            );
+
+          if (
+            registro.vendedorIdAnterior !==
+            vendedorId
+          ) {
+            rutasAsignadas++;
+          } else {
+            rutasSinCambio++;
+          }
+
+          detalleRutas.push({
+            ruta:
+              registro.ruta,
+            clientes:
+              registro.clientes,
+            estado:
+              "ASIGNADA",
+            vendedor:
+              registro
+                .vendedoresResueltos
+                .get(vendedorId),
+            vendedor_id:
+              vendedorId,
+            vendedores_excel:
+              vendedoresExcel
+          });
+
+        } else if (
+          vendedoresIds.length > 1
+        ) {
+          /*
+          Nunca asignamos automáticamente una ruta
+          si el Excel trae más de un vendedor real.
+          */
+          rutasConConflicto++;
+
+          detalleRutas.push({
+            ruta:
+              registro.ruta,
+            clientes:
+              registro.clientes,
+            estado:
+              "CONFLICTO",
+            vendedores:
+              vendedoresIds.map(
+                id =>
+                  registro
+                    .vendedoresResueltos
+                    .get(id)
+              ),
+            vendedores_excel:
+              vendedoresExcel
+          });
+
+          advertencias.push({
+            ruta:
+              registro.ruta,
+            motivo:
+              `La ruta ${registro.ruta} aparece con más de un vendedor ` +
+              `en el Excel. No se modificó el vendedor de la ruta.`,
+            vendedores:
+              vendedoresIds.map(
+                id =>
+                  registro
+                    .vendedoresResueltos
+                    .get(id)
+              )
+          });
+
+        } else {
+          /*
+          Ningún vendedor pudo resolverse para la ruta.
+          No borramos una asignación anterior porque
+          sería riesgoso hacerlo automáticamente.
+          */
+          rutasSinVendedorExcel++;
+
+          detalleRutas.push({
+            ruta:
+              registro.ruta,
+            clientes:
+              registro.clientes,
+            estado:
+              "SIN_VENDEDOR_RESUELTO",
+            vendedor_anterior_id:
+              registro.vendedorIdAnterior,
+            vendedores_excel:
+              vendedoresExcel,
+            clientes_sin_vendedor_resuelto:
+              registro.clientesSinVendedor
+          });
+        }
+      }
+
+      /*
+      =================================
+      SUSPENDER CLIENTES AUSENTES
+      =================================
+      */
+
       if (
         codigosImportados.length > 0
       ) {
@@ -1018,8 +1540,108 @@ router.post(
           );
 
         suspendidos =
-          resultadoSuspendidos.rows.length;
+          resultadoSuspendidos
+            .rows.length;
       }
+
+      /*
+      =================================
+      AUDITORÍA FINAL DEL PADRÓN
+      =================================
+      */
+
+      const rutasProblemaResult =
+        await db.query(
+          `
+          SELECT
+            r.id AS ruta_id,
+            r.nombre AS ruta,
+            COUNT(c.id)::int
+              AS clientes_activos
+          FROM rutas r
+          INNER JOIN clientes c
+            ON c.ruta_id = r.id
+           AND c.deleted_at IS NULL
+           AND c.activo = true
+          WHERE r.activo = true
+            AND r.vendedor_id IS NULL
+          GROUP BY
+            r.id,
+            r.nombre
+          ORDER BY
+            r.nombre
+          `
+        );
+
+      const clientesSinRutaResult =
+        await db.query(
+          `
+          SELECT
+            COUNT(*)::int AS total
+          FROM clientes
+          WHERE deleted_at IS NULL
+            AND activo = true
+            AND ruta_id IS NULL
+          `
+        );
+
+      const clientesSinRutaNiVendedorResult =
+        await db.query(
+          `
+          SELECT
+            COUNT(*)::int AS total
+          FROM clientes
+          WHERE deleted_at IS NULL
+            AND activo = true
+            AND ruta_id IS NULL
+            AND vendedor_id IS NULL
+          `
+        );
+
+      const clientesSinFrecuenciaResult =
+        await db.query(
+          `
+          SELECT
+            COUNT(*)::int AS total
+          FROM clientes
+          WHERE deleted_at IS NULL
+            AND activo = true
+            AND frecuencia_id IS NULL
+          `
+        );
+
+      const clientesSinCoordenadasResult =
+        await db.query(
+          `
+          SELECT
+            COUNT(*)::int AS total
+          FROM clientes
+          WHERE deleted_at IS NULL
+            AND activo = true
+            AND (
+              latitud IS NULL
+              OR longitud IS NULL
+              OR latitud = 0
+              OR longitud = 0
+            )
+          `
+        );
+
+      const rutasSinVendedor =
+        rutasProblemaResult.rows;
+
+      const clientesAfectadosPorRutasSinVendedor =
+        rutasSinVendedor.reduce(
+          (
+            acumulado,
+            ruta
+          ) =>
+            acumulado +
+            Number(
+              ruta.clientes_activos || 0
+            ),
+          0
+        );
 
       res.json({
         mensaje:
@@ -1040,11 +1662,64 @@ router.post(
 
         rutasCreadas,
         rutasAsignadas,
+        rutasSinCambio,
+        rutasConConflicto,
+        rutasSinVendedorExcel,
 
         clientesAsignadosDirectamente,
 
         vendedoresEncontrados:
           vendedoresEncontrados.size,
+
+        resolucionVendedores: {
+          por_legajo:
+            vendedoresPorLegajo,
+
+          por_nombre_exacto:
+            vendedoresExactos,
+
+          por_nombre_flexible:
+            vendedoresFlexibles,
+
+          no_encontrados:
+            vendedoresNoEncontrados,
+
+          ambiguos:
+            vendedoresAmbiguos
+        },
+
+        auditoriaFinal: {
+          rutas_sin_vendedor:
+            rutasSinVendedor.length,
+
+          clientes_afectados_por_rutas_sin_vendedor:
+            clientesAfectadosPorRutasSinVendedor,
+
+          detalle_rutas_sin_vendedor:
+            rutasSinVendedor,
+
+          clientes_sin_ruta:
+            clientesSinRutaResult
+              .rows[0]
+              .total,
+
+          clientes_sin_ruta_ni_vendedor:
+            clientesSinRutaNiVendedorResult
+              .rows[0]
+              .total,
+
+          clientes_sin_frecuencia:
+            clientesSinFrecuenciaResult
+              .rows[0]
+              .total,
+
+          clientes_sin_coordenadas:
+            clientesSinCoordenadasResult
+              .rows[0]
+              .total
+        },
+
+        detalleRutas,
 
         advertencias,
         errores
@@ -1063,6 +1738,25 @@ router.post(
         detalle:
           error.message
       });
+
+    } finally {
+      if (
+        archivoTemporal &&
+        fs.existsSync(
+          archivoTemporal
+        )
+      ) {
+        try {
+          fs.unlinkSync(
+            archivoTemporal
+          );
+        } catch (errorBorrado) {
+          console.error(
+            "NO SE PUDO BORRAR ARCHIVO TEMPORAL:",
+            errorBorrado.message
+          );
+        }
+      }
     }
   }
 );
