@@ -2463,14 +2463,61 @@ router.patch(
           );
       }
 
+      /*
+      Control de códigos no encontrados.
+      Permite que el Supervisor informe exactamente
+      cuáles códigos no pudieron actualizarse.
+      */
+      const codigosEncontrados =
+        new Set(
+          result.rows
+            .map(cliente =>
+              String(
+                cliente.codigo_cliente || ""
+              )
+                .trim()
+                .replace(/\.0$/, "")
+            )
+            .filter(Boolean)
+        );
+
+      const codigosNoEncontrados =
+        codigos.length > 0
+          ? codigos.filter(
+              codigo =>
+                !codigosEncontrados.has(
+                  String(codigo)
+                    .trim()
+                    .replace(/\.0$/, "")
+                )
+            )
+          : [];
+
+      const cantidadIngresados =
+        ids.length > 0
+          ? ids.length
+          : codigos.length;
+
       res.json({
         mensaje:
           es_ejecucion
             ? "Clientes marcados como Ejecución"
             : "Clientes quitados de Ejecución",
 
+        ingresados:
+          cantidadIngresados,
+
+        encontrados:
+          result.rows.length,
+
         actualizados:
           result.rows.length,
+
+        no_encontrados:
+          codigosNoEncontrados.length,
+
+        codigos_no_encontrados:
+          codigosNoEncontrados,
 
         clientes:
           result.rows
