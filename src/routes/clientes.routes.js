@@ -284,6 +284,12 @@ router.get("/", async (req, res) => {
           c.frecuencia_id,
           c.ruta_id,
           c.activo,
+
+          c.es_ejecucion
+            AS programa_ejecucion,
+
+          c.semana_ejecucion,
+
           c.created_at,
           c.updated_at,
 
@@ -1851,6 +1857,753 @@ router.get(
           error.message
       });
 
+    }
+  }
+);
+
+/*
+=================================
+GESTIÓN DE EJECUCIÓN
+NO MODIFICA TODAVÍA EL RECORRIDO
+DEL VENDEDOR.
+=================================
+*/
+
+/*
+GET /clientes/ejecucion/resumen
+
+Devuelve el estado general de la clasificación
+de clientes de Ejecución.
+*/
+router.get(
+  "/ejecucion/resumen",
+  async (req, res) => {
+    try {
+      const result =
+        await db.query(`
+          SELECT
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+            )::int
+              AS clientes_activos,
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+                AND es_ejecucion = true
+            )::int
+              AS ejecucion_total,
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+                AND es_ejecucion = true
+                AND semana_ejecucion = 1
+            )::int
+              AS semana_1,
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+                AND es_ejecucion = true
+                AND semana_ejecucion = 2
+            )::int
+              AS semana_2,
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+                AND es_ejecucion = true
+                AND semana_ejecucion = 3
+            )::int
+              AS semana_3,
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+                AND es_ejecucion = true
+                AND semana_ejecucion = 4
+            )::int
+              AS semana_4,
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+                AND es_ejecucion = true
+                AND semana_ejecucion = 5
+            )::int
+              AS semana_5,
+
+            COUNT(*) FILTER (
+              WHERE deleted_at IS NULL
+                AND activo = true
+                AND es_ejecucion = true
+                AND semana_ejecucion IS NULL
+            )::int
+              AS ejecucion_sin_semana
+
+          FROM clientes
+        `);
+
+      res.json(
+        result.rows[0]
+      );
+
+    } catch (error) {
+      console.error(
+        "ERROR RESUMEN EJECUCION:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al obtener resumen de Ejecución",
+
+        detalle:
+          error.message
+      });
+    }
+  }
+);
+
+/*
+GET /clientes/ejecucion
+
+Filtros:
+buscar
+estado = todos | ejecucion | normal
+semana = 1..5
+ruta_id
+limit
+offset
+*/
+router.get(
+  "/ejecucion",
+  async (req, res) => {
+    try {
+      const buscar =
+        String(
+          req.query.buscar || ""
+        ).trim();
+
+      const estado =
+        String(
+          req.query.estado || "todos"
+        )
+          .trim()
+          .toLowerCase();
+
+      const rutaId =
+        String(
+          req.query.ruta_id || ""
+        ).trim() || null;
+
+      const semanaTexto =
+        String(
+          req.query.semana || ""
+        ).trim();
+
+      let semana = null;
+
+      if (semanaTexto) {
+        semana =
+          Number(
+            semanaTexto
+          );
+
+        if (
+          !Number.isInteger(semana) ||
+          semana < 1 ||
+          semana > 5
+        ) {
+          return res.status(400).json({
+            error:
+              "La semana de Ejecución debe ser un número entre 1 y 5"
+          });
+        }
+      }
+
+      if (
+        ![
+          "todos",
+          "ejecucion",
+          "normal"
+        ].includes(estado)
+      ) {
+        return res.status(400).json({
+          error:
+            "Estado de Ejecución inválido"
+        });
+      }
+
+      const limit =
+        Math.min(
+          Math.max(
+            Number(
+              req.query.limit || 100
+            ),
+            1
+          ),
+          500
+        );
+
+      const offset =
+        Math.max(
+          Number(
+            req.query.offset || 0
+          ),
+          0
+        );
+
+      let where = `
+        WHERE c.deleted_at IS NULL
+          AND c.activo = true
+      `;
+
+      const params = [];
+
+      if (buscar) {
+        params.push(
+          `%${buscar.toLowerCase()}%`
+        );
+
+        const posicion =
+          params.length;
+
+        where += `
+          AND (
+            LOWER(
+              COALESCE(
+                c.codigo_cliente,
+                ''
+              )
+            ) LIKE $${posicion}
+
+            OR LOWER(
+              COALESCE(
+                c.nombre,
+                ''
+              )
+            ) LIKE $${posicion}
+
+            OR LOWER(
+              COALESCE(
+                c.direccion,
+                ''
+              )
+            ) LIKE $${posicion}
+
+            OR LOWER(
+              COALESCE(
+                c.localidad,
+                ''
+              )
+            ) LIKE $${posicion}
+
+            OR LOWER(
+              COALESCE(
+                r.nombre,
+                ''
+              )
+            ) LIKE $${posicion}
+          )
+        `;
+      }
+
+      if (
+        estado === "ejecucion"
+      ) {
+        where += `
+          AND c.es_ejecucion = true
+        `;
+      }
+
+      if (
+        estado === "normal"
+      ) {
+        where += `
+          AND c.es_ejecucion = false
+        `;
+      }
+
+      if (semana !== null) {
+        params.push(
+          semana
+        );
+
+        const posicion =
+          params.length;
+
+        where += `
+          AND c.es_ejecucion = true
+          AND c.semana_ejecucion =
+              $${posicion}::int
+        `;
+      }
+
+      if (rutaId) {
+        params.push(
+          rutaId
+        );
+
+        const posicion =
+          params.length;
+
+        where += `
+          AND c.ruta_id =
+              $${posicion}::uuid
+        `;
+      }
+
+      const totalResult =
+        await db.query(
+          `
+          SELECT
+            COUNT(*)::int
+              AS total
+
+          FROM clientes c
+
+          LEFT JOIN rutas r
+            ON r.id =
+               c.ruta_id
+
+          ${where}
+          `,
+          params
+        );
+
+      params.push(
+        limit
+      );
+
+      const posicionLimit =
+        params.length;
+
+      params.push(
+        offset
+      );
+
+      const posicionOffset =
+        params.length;
+
+      const result =
+        await db.query(
+          `
+          SELECT
+
+            c.id,
+
+            c.codigo_cliente,
+
+            c.nombre,
+
+            c.direccion,
+
+            c.localidad,
+
+            c.categoria,
+
+            c.ruta_id,
+
+            r.nombre
+              AS ruta,
+
+            c.frecuencia_id,
+
+            fr.nombre
+              AS frecuencia,
+
+            c.es_ejecucion,
+
+            c.semana_ejecucion,
+
+            r.vendedor_id
+              AS vendedor_ruta_id,
+
+            TRIM(
+              COALESCE(
+                ur.nombre,
+                ''
+              )
+              || ' ' ||
+              COALESCE(
+                ur.apellido,
+                ''
+              )
+            )
+              AS vendedor_ruta
+
+          FROM clientes c
+
+          LEFT JOIN rutas r
+            ON r.id =
+               c.ruta_id
+
+          LEFT JOIN frecuencias fr
+            ON fr.id =
+               c.frecuencia_id
+
+          LEFT JOIN usuarios ur
+            ON ur.id =
+               r.vendedor_id
+
+          ${where}
+
+          ORDER BY
+            CASE
+              WHEN c.es_ejecucion = true
+              THEN 0
+              ELSE 1
+            END,
+
+            c.semana_ejecucion
+              NULLS LAST,
+
+            r.nombre
+              NULLS LAST,
+
+            c.nombre,
+
+            c.codigo_cliente
+
+          LIMIT
+            $${posicionLimit}
+
+          OFFSET
+            $${posicionOffset}
+          `,
+          params
+        );
+
+      res.json({
+        total:
+          totalResult.rows[0].total,
+
+        limit,
+        offset,
+
+        clientes:
+          result.rows
+      });
+
+    } catch (error) {
+      console.error(
+        "ERROR LISTANDO EJECUCION:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al obtener clientes de Ejecución",
+
+        detalle:
+          error.message
+      });
+    }
+  }
+);
+
+/*
+PATCH /clientes/ejecucion/masivo
+
+BODY:
+{
+  "cliente_ids": ["uuid", ...]
+  // o
+  "codigos_cliente": ["1001", "1002", ...],
+
+  "es_ejecucion": true,
+  "semana_ejecucion": 1
+}
+
+Si es_ejecucion = false:
+semana_ejecucion se limpia automáticamente.
+*/
+router.patch(
+  "/ejecucion/masivo",
+  async (req, res) => {
+    try {
+      const {
+        cliente_ids,
+        codigos_cliente,
+        es_ejecucion,
+        semana_ejecucion
+      } = req.body || {};
+
+      if (
+        typeof es_ejecucion !==
+        "boolean"
+      ) {
+        return res.status(400).json({
+          error:
+            "Debe indicar es_ejecucion como true o false"
+        });
+      }
+
+      let semana = null;
+
+      if (es_ejecucion) {
+        semana =
+          Number(
+            semana_ejecucion
+          );
+
+        if (
+          !Number.isInteger(semana) ||
+          semana < 1 ||
+          semana > 5
+        ) {
+          return res.status(400).json({
+            error:
+              "Para marcar clientes como Ejecución debe indicar una semana entre 1 y 5"
+          });
+        }
+      }
+
+      const ids =
+        Array.isArray(cliente_ids)
+          ? [
+              ...new Set(
+                cliente_ids
+                  .map(valor =>
+                    String(valor || "")
+                      .trim()
+                  )
+                  .filter(Boolean)
+              )
+            ]
+          : [];
+
+      const codigos =
+        Array.isArray(
+          codigos_cliente
+        )
+          ? [
+              ...new Set(
+                codigos_cliente
+                  .map(valor =>
+                    String(valor || "")
+                      .trim()
+                      .replace(/\.0$/, "")
+                  )
+                  .filter(Boolean)
+              )
+            ]
+          : [];
+
+      if (
+        ids.length === 0 &&
+        codigos.length === 0
+      ) {
+        return res.status(400).json({
+          error:
+            "Debe indicar al menos un cliente o código de cliente"
+        });
+      }
+
+      let result;
+
+      if (ids.length > 0) {
+        result =
+          await db.query(
+            `
+            UPDATE clientes
+            SET
+              es_ejecucion = $1,
+              semana_ejecucion = $2,
+              updated_at = NOW()
+
+            WHERE deleted_at IS NULL
+              AND id =
+                  ANY($3::uuid[])
+
+            RETURNING
+              id,
+              codigo_cliente,
+              nombre,
+              es_ejecucion,
+              semana_ejecucion
+            `,
+            [
+              es_ejecucion,
+              semana,
+              ids
+            ]
+          );
+
+      } else {
+        result =
+          await db.query(
+            `
+            UPDATE clientes
+            SET
+              es_ejecucion = $1,
+              semana_ejecucion = $2,
+              updated_at = NOW()
+
+            WHERE deleted_at IS NULL
+              AND codigo_cliente =
+                  ANY($3::text[])
+
+            RETURNING
+              id,
+              codigo_cliente,
+              nombre,
+              es_ejecucion,
+              semana_ejecucion
+            `,
+            [
+              es_ejecucion,
+              semana,
+              codigos
+            ]
+          );
+      }
+
+      res.json({
+        mensaje:
+          es_ejecucion
+            ? "Clientes marcados como Ejecución"
+            : "Clientes quitados de Ejecución",
+
+        actualizados:
+          result.rows.length,
+
+        clientes:
+          result.rows
+      });
+
+    } catch (error) {
+      console.error(
+        "ERROR ACTUALIZACION MASIVA EJECUCION:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al actualizar clientes de Ejecución",
+
+        detalle:
+          error.message
+      });
+    }
+  }
+);
+
+/*
+PATCH /clientes/:id/ejecucion
+
+BODY:
+{
+  "es_ejecucion": true,
+  "semana_ejecucion": 1
+}
+*/
+router.patch(
+  "/:id/ejecucion",
+  async (req, res) => {
+    try {
+      const { id } =
+        req.params;
+
+      const {
+        es_ejecucion,
+        semana_ejecucion
+      } = req.body || {};
+
+      if (
+        typeof es_ejecucion !==
+        "boolean"
+      ) {
+        return res.status(400).json({
+          error:
+            "Debe indicar es_ejecucion como true o false"
+        });
+      }
+
+      let semana = null;
+
+      if (es_ejecucion) {
+        semana =
+          Number(
+            semana_ejecucion
+          );
+
+        if (
+          !Number.isInteger(semana) ||
+          semana < 1 ||
+          semana > 5
+        ) {
+          return res.status(400).json({
+            error:
+              "Para marcar el cliente como Ejecución debe indicar una semana entre 1 y 5"
+          });
+        }
+      }
+
+      const result =
+        await db.query(
+          `
+          UPDATE clientes
+          SET
+            es_ejecucion = $1,
+            semana_ejecucion = $2,
+            updated_at = NOW()
+
+          WHERE id = $3
+            AND deleted_at IS NULL
+
+          RETURNING
+            id,
+            codigo_cliente,
+            nombre,
+            ruta_id,
+            frecuencia_id,
+            es_ejecucion,
+            semana_ejecucion
+          `,
+          [
+            es_ejecucion,
+            semana,
+            id
+          ]
+        );
+
+      if (
+        result.rows.length === 0
+      ) {
+        return res.status(404).json({
+          error:
+            "Cliente no encontrado"
+        });
+      }
+
+      res.json({
+        mensaje:
+          es_ejecucion
+            ? "Cliente marcado como Ejecución"
+            : "Cliente quitado de Ejecución",
+
+        cliente:
+          result.rows[0]
+      });
+
+    } catch (error) {
+      console.error(
+        "ERROR ACTUALIZANDO EJECUCION:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al actualizar Ejecución del cliente",
+
+        detalle:
+          error.message
+      });
     }
   }
 );
