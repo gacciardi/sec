@@ -669,6 +669,19 @@ router.get(
               AND c.ruta_id = $1
 
               AND (
+                c.es_ejecucion = false
+
+                OR (
+                  c.es_ejecucion = true
+                  AND c.semana_ejecucion IS NOT NULL
+                  AND c.semana_ejecucion =
+                    (
+                      ((EXTRACT(DAY FROM p.fecha_consulta)::int - 1) / 7) + 1
+                    )
+                )
+              )
+
+              AND (
 
                 (
                   EXTRACT(
@@ -887,6 +900,11 @@ router.get(
 
             fr.nombre
               AS frecuencia,
+
+            c.es_ejecucion
+              AS programa_ejecucion,
+
+            c.semana_ejecucion,
 
             r.nombre
               AS ruta,
@@ -1229,6 +1247,15 @@ router.get(
               OR (r.vendedor_id IS NULL AND c.vendedor_id = $1)
             )
             AND (
+              c.es_ejecucion = false
+              OR (
+                c.es_ejecucion = true
+                AND c.semana_ejecucion IS NOT NULL
+                AND c.semana_ejecucion =
+                  (((EXTRACT(DAY FROM p.fecha_consulta)::int - 1) / 7) + 1)
+              )
+            )
+            AND (
               (EXTRACT(ISODOW FROM p.fecha_consulta) = 1 AND fr.lunes = true)
               OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 2 AND fr.martes = true)
               OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 3 AND fr.miercoles = true)
@@ -1286,6 +1313,8 @@ router.get(
           c.radio_geocerca,
           ca.nombre AS canal,
           fr.nombre AS frecuencia,
+          c.es_ejecucion AS programa_ejecucion,
+          c.semana_ejecucion,
           r.nombre AS ruta,
            (p.cliente_id IS NOT NULL) AS programado,
 
@@ -1329,10 +1358,10 @@ router.get(
       );
 
       const clientes = result.rows;
-      const total = clientes.length;
-      const visitados = clientes.filter(c => c.visitado).length;
+      const total = clientes.filter(c => c.programado).length;
+      const visitados = clientes.filter(c => c.programado && c.visitado).length;
       const pendientes = clientes.filter(c => c.programado && !c.visitado).length;
-      const sinCoordenadas = clientes.filter(c => !c.tiene_coordenadas).length;
+      const sinCoordenadas = clientes.filter(c => c.programado && !c.tiene_coordenadas).length;
       const noProgramadosVisitados = clientes.filter(c => !c.programado && c.visitado).length;
       const permanenciaTotal = clientes.reduce(
         (acumulado, c) => acumulado + Number(c.permanencia_segundos || 0),
@@ -1429,6 +1458,12 @@ router.get(
 
           ca.nombre AS canal,
           fr.nombre AS frecuencia,
+
+          c.es_ejecucion
+            AS programa_ejecucion,
+
+          c.semana_ejecucion,
+
           r.nombre AS ruta,
 
           COALESCE(
@@ -1494,6 +1529,19 @@ router.get(
               AND c.vendedor_id = $1
             )
 
+          )
+
+          AND (
+            c.es_ejecucion = false
+
+            OR (
+              c.es_ejecucion = true
+              AND c.semana_ejecucion IS NOT NULL
+              AND c.semana_ejecucion =
+                (
+                  ((EXTRACT(DAY FROM CURRENT_DATE)::int - 1) / 7) + 1
+                )
+            )
           )
 
           AND (
