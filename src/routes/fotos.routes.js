@@ -206,6 +206,101 @@ async function subirBufferCloudinary(buffer, opciones) {
   return cuerpoJson;
 }
 
+
+async function eliminarImagenCloudinary(publicId) {
+  const cloudName =
+    (process.env.CLOUDINARY_CLOUD_NAME || "").trim();
+
+  const apiKey =
+    (process.env.CLOUDINARY_API_KEY || "").trim();
+
+  const apiSecret =
+    (process.env.CLOUDINARY_API_SECRET || "").trim();
+
+  if (!cloudName || !apiKey || !apiSecret) {
+    throw new Error(
+      "Faltan credenciales de Cloudinary en las variables de entorno"
+    );
+  }
+
+  if (!publicId) {
+    return { result: "sin_public_id" };
+  }
+
+  const timestamp =
+    Math.floor(Date.now() / 1000);
+
+  const cadenaFirma =
+    `invalidate=true&public_id=${publicId}&timestamp=${timestamp}${apiSecret}`;
+
+  const signature =
+    crypto
+      .createHash("sha1")
+      .update(cadenaFirma)
+      .digest("hex");
+
+  const formulario =
+    new FormData();
+
+  formulario.append("public_id", publicId);
+  formulario.append("timestamp", String(timestamp));
+  formulario.append("api_key", apiKey);
+  formulario.append("signature", signature);
+  formulario.append("invalidate", "true");
+
+  const url =
+    `https://api.cloudinary.com/v1_1/${encodeURIComponent(
+      cloudName
+    )}/image/destroy`;
+
+  const respuesta =
+    await fetch(url, {
+      method: "POST",
+      body: formulario
+    });
+
+  const cuerpoTexto =
+    await respuesta.text();
+
+  let cuerpoJson;
+
+  try {
+    cuerpoJson =
+      cuerpoTexto
+        ? JSON.parse(cuerpoTexto)
+        : {};
+  } catch (_) {
+    cuerpoJson = { raw: cuerpoTexto };
+  }
+
+  if (!respuesta.ok) {
+    const detalle =
+      cuerpoJson?.error?.message ||
+      cuerpoJson?.message ||
+      cuerpoTexto ||
+      `HTTP ${respuesta.status}`;
+
+    throw new Error(
+      `Cloudinary respondió ${respuesta.status}: ${detalle}`
+    );
+  }
+
+  const resultado =
+    String(cuerpoJson?.result || "").toLowerCase();
+
+  if (
+    resultado &&
+    resultado !== "ok" &&
+    resultado !== "not found"
+  ) {
+    throw new Error(
+      `Cloudinary no confirmó la eliminación: ${cuerpoJson.result}`
+    );
+  }
+
+  return cuerpoJson;
+}
+
 /*
 POST /fotos/evidencias
 
@@ -467,6 +562,86 @@ router.post(
         error: "No se pudo sincronizar la fotografía",
         detalle: error.message,
         id_evidencia: idEvidencia
+      });
+    }
+  }
+);
+
+
+/*
+DELETE /fotos/evidencias/:id
+
+Elimina una fotografía de Cloudinary y luego
+el registro correspondiente de PostgreSQL.
+*/
+router.delete(
+  "/evidencias/:id",
+  async (req, res) => {
+    try {
+      const { id } =
+        req.params;
+
+      const fotoResult =
+        await db.query(
+          `
+            SELECT
+              id,
+              cloudinary_public_id,
+              url_segura,
+              url_imagen,
+              estado
+            FROM fotos_evidencias
+            WHERE id = $1
+            LIMIT 1
+          `,
+          [id]
+        );
+
+      if (fotoResult.rows.length === 0) {
+        return res.status(404).json({
+          error:
+            "Fotografía no encontrada"
+        });
+      }
+
+      const foto =
+        fotoResult.rows[0];
+
+      if (foto.cloudinary_public_id) {
+        await eliminarImagenCloudinary(
+          foto.cloudinary_public_id
+        );
+      }
+
+      const eliminadoResult =
+        await db.query(
+          `
+            DELETE FROM fotos_evidencias
+            WHERE id = $1
+            RETURNING id
+          `,
+          [id]
+        );
+
+      return res.json({
+        ok: true,
+        mensaje:
+          "Fotografía eliminada correctamente",
+        id:
+          eliminadoResult.rows[0]?.id || id
+      });
+
+    } catch (error) {
+      console.error(
+        "ERROR ELIMINANDO FOTO:",
+        error
+      );
+
+      return res.status(500).json({
+        error:
+          "No se pudo eliminar la fotografía",
+        detalle:
+          error.message
       });
     }
   }
