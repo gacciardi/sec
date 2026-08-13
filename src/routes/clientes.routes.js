@@ -2010,7 +2010,7 @@ router.get(
         return '"' + String(valor).replace(/"/g, '""') + '"';
       }
 
-      const filas = [columnas.join(",")];
+      const filas = [columnas.join(";")];
 
       result.rows.forEach(item => {
         const registro = {
@@ -2039,7 +2039,7 @@ router.get(
         filas.push(
           columnas
             .map(columna => valorCsv(registro[columna]))
-            .join(",")
+            .join(";")
         );
       });
 
