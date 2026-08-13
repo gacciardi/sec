@@ -408,6 +408,50 @@ router.post(
 
       /*
       =================================
+      HISTORIAL UNIFICADO DE COORDENADAS
+      =================================
+      */
+
+      if (
+        latAnterior !== latNueva ||
+        lngAnterior !== lngNueva
+      ) {
+        await conexion.query(
+          `
+            INSERT INTO clientes_coordenadas_historial (
+              cliente_id,
+              latitud_anterior,
+              longitud_anterior,
+              latitud_nueva,
+              longitud_nueva,
+              origen,
+              vendedor_id,
+              created_at
+            )
+            VALUES (
+              $1,
+              $2,
+              $3,
+              $4,
+              $5,
+              'LOCALIZADOR',
+              $6,
+              NOW()
+            )
+          `,
+          [
+            cliente_id,
+            latAnterior,
+            lngAnterior,
+            latNueva,
+            lngNueva,
+            vendedor_id
+          ]
+        );
+      }
+
+      /*
+      =================================
       ACTUALIZAR SOLO COORDENADAS
       =================================
       */

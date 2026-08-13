@@ -841,97 +841,219 @@ router.post(
         });
       }
 
-      const visita = await db.query(
-        `
-        INSERT INTO visitas (
-          cliente_id,
-          vendedor_id,
-          fecha,
-          hora_llegada,
-          latitud_llegada,
-          longitud_llegada
-        )
-        VALUES (
-          $1,
-          $2,
-          CURRENT_DATE,
-          NOW(),
-          $3,
-          $4
-        )
-        RETURNING *
-        `,
-        [
-          clienteMasCercano.id,
-          vendedor_id,
-          latActual,
-          lngActual
-        ]
-      );
+      const conexion =
+        await db.connect();
 
-      await db.query(
-        `
-        UPDATE clientes
-        SET
-          latitud = $1,
-          longitud = $2,
-          updated_at = NOW()
-        WHERE id = $3
-        `,
-        [
-          latActual,
-          lngActual,
-          clienteMasCercano.id
-        ]
-      );
+      let transaccionIniciada = false;
 
       try {
-        await db.query(
+        await conexion.query("BEGIN");
+        transaccionIniciada = true;
+
+        /*
+        Tomamos y bloqueamos la coordenada vigente
+        justo antes de modificar el maestro.
+        */
+        const clienteActualResult =
+          await conexion.query(
+            `
+              SELECT
+                id,
+                latitud,
+                longitud
+              FROM clientes
+              WHERE id = $1
+                AND deleted_at IS NULL
+                AND activo = true
+              FOR UPDATE
+            `,
+            [
+              clienteMasCercano.id
+            ]
+          );
+
+        if (
+          clienteActualResult.rows.length === 0
+        ) {
+          await conexion.query("ROLLBACK");
+          transaccionIniciada = false;
+
+          return res.status(404).json({
+            error:
+              "Cliente no encontrado o inactivo"
+          });
+        }
+
+        const clienteActual =
+          clienteActualResult.rows[0];
+
+        const latAnteriorNumero =
+          Number(clienteActual.latitud);
+
+        const lngAnteriorNumero =
+          Number(clienteActual.longitud);
+
+        const latAnterior =
+          Number.isFinite(latAnteriorNumero)
+            ? latAnteriorNumero
+            : null;
+
+        const lngAnterior =
+          Number.isFinite(lngAnteriorNumero)
+            ? lngAnteriorNumero
+            : null;
+
+        const visita =
+          await conexion.query(
+            `
+              INSERT INTO visitas (
+                cliente_id,
+                vendedor_id,
+                fecha,
+                hora_llegada,
+                latitud_llegada,
+                longitud_llegada
+              )
+              VALUES (
+                $1,
+                $2,
+                CURRENT_DATE,
+                NOW(),
+                $3,
+                $4
+              )
+              RETURNING *
+            `,
+            [
+              clienteMasCercano.id,
+              vendedor_id,
+              latActual,
+              lngActual
+            ]
+          );
+
+        if (
+          latAnterior !== latActual ||
+          lngAnterior !== lngActual
+        ) {
+          await conexion.query(
+            `
+              INSERT INTO clientes_coordenadas_historial (
+                cliente_id,
+                latitud_anterior,
+                longitud_anterior,
+                latitud_nueva,
+                longitud_nueva,
+                origen,
+                vendedor_id,
+                created_at
+              )
+              VALUES (
+                $1,
+                $2,
+                $3,
+                $4,
+                $5,
+                'ENTRADA_MANUAL',
+                $6,
+                NOW()
+              )
+            `,
+            [
+              clienteMasCercano.id,
+              latAnterior,
+              lngAnterior,
+              latActual,
+              lngActual,
+              vendedor_id
+            ]
+          );
+        }
+
+        await conexion.query(
           `
-          INSERT INTO alertas (
-            vendedor_id,
-            cliente_id,
-            visita_id,
-            tipo,
-            prioridad,
-            descripcion
-          )
-          VALUES (
-            $1,
-            $2,
-            $3,
-            'GEOREFERENCIA',
-            'MEDIA',
-            $4
-          )
+            UPDATE clientes
+            SET
+              latitud = $1,
+              longitud = $2,
+              updated_at = NOW()
+            WHERE id = $3
           `,
           [
-            vendedor_id,
-            clienteMasCercano.id,
-            visita.rows[0].id,
-            `Se actualizó la georreferencia de ${clienteMasCercano.nombre}`
+            latActual,
+            lngActual,
+            clienteMasCercano.id
           ]
         );
-      } catch (errorAlerta) {
-        console.error(
-          "No se pudo generar alerta de georreferencia:",
-          errorAlerta.message
-        );
+
+        try {
+          await conexion.query(
+            `
+              INSERT INTO alertas (
+                vendedor_id,
+                cliente_id,
+                visita_id,
+                tipo,
+                prioridad,
+                descripcion
+              )
+              VALUES (
+                $1,
+                $2,
+                $3,
+                'GEOREFERENCIA',
+                'MEDIA',
+                $4
+              )
+            `,
+            [
+              vendedor_id,
+              clienteMasCercano.id,
+              visita.rows[0].id,
+              `Se actualizó la georreferencia de ${clienteMasCercano.nombre}`
+            ]
+          );
+        } catch (errorAlerta) {
+          console.error(
+            "No se pudo generar alerta de georreferencia:",
+            errorAlerta.message
+          );
+        }
+
+        await conexion.query("COMMIT");
+        transaccionIniciada = false;
+
+        res.json({
+          mensaje:
+            "Entrada manual registrada",
+
+          cliente:
+            clienteMasCercano.nombre,
+
+          distancia_metros:
+            Math.round(menor),
+
+          visita:
+            visita.rows[0]
+        });
+
+      } catch (errorTransaccion) {
+        if (transaccionIniciada) {
+          try {
+            await conexion.query("ROLLBACK");
+          } catch (rollbackError) {
+            console.error(
+              "ERROR HACIENDO ROLLBACK EN ENTRADA MANUAL:",
+              rollbackError
+            );
+          }
+        }
+
+        throw errorTransaccion;
+
+      } finally {
+        conexion.release();
       }
-
-      res.json({
-        mensaje:
-          "Entrada manual registrada",
-
-        cliente:
-          clienteMasCercano.nombre,
-
-        distancia_metros:
-          Math.round(menor),
-
-        visita:
-          visita.rows[0]
-      });
 
     } catch (error) {
       res.status(500).json({
