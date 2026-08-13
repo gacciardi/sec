@@ -165,8 +165,10 @@ router.get(
 
         WHERE u.deleted_at IS NULL
           AND u.activo = true
-          AND UPPER(TRIM(u.rol)) =
-            'VENDEDOR'
+          AND UPPER(TRIM(u.rol)) IN (
+            'VENDEDOR',
+            'TRADE_MARKETING'
+          )
 
         ORDER BY
           u.apellido,
@@ -290,11 +292,17 @@ router.post(
       const usuario =
         usuarioResult.rows[0];
 
+      const rolOperativo =
+        String(usuario.rol || "")
+          .trim()
+          .toUpperCase();
+
       if (
         usuario.activo !== true ||
-        String(usuario.rol || "")
-          .toUpperCase() !==
-          "VENDEDOR"
+        ![
+          "VENDEDOR",
+          "TRADE_MARKETING"
+        ].includes(rolOperativo)
       ) {
         await conexion.query(
           "ROLLBACK"
@@ -302,7 +310,7 @@ router.post(
 
         return res.status(400).json({
           error:
-            "El usuario no es un vendedor activo"
+            "El usuario no es un vendedor o Trade Marketing activo"
         });
       }
 
