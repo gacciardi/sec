@@ -1911,6 +1911,168 @@ router.get(
 
 /*
 =================================
+EXPORTAR HISTORIAL DE COORDENADAS
+=================================
+*/
+
+router.get(
+  "/exportar/coordenadas",
+  async (req, res) => {
+    try {
+      const result = await db.query(`
+        SELECT
+          h.created_at,
+          c.codigo_cliente,
+          c.nombre,
+          c.direccion,
+          c.localidad,
+          r.nombre AS ruta,
+          TRIM(
+            COALESCE(ur.nombre, ud.nombre, '') || ' ' ||
+            COALESCE(ur.apellido, ud.apellido, '')
+          ) AS vendedor_titular,
+          h.latitud_anterior,
+          h.longitud_anterior,
+          h.latitud_nueva,
+          h.longitud_nueva,
+          h.origen,
+          um.legajo AS legajo_modifico,
+          TRIM(
+            COALESCE(um.nombre, '') || ' ' ||
+            COALESCE(um.apellido, '')
+          ) AS usuario_modifico
+        FROM clientes_coordenadas_historial h
+        INNER JOIN clientes c
+          ON c.id = h.cliente_id
+        LEFT JOIN rutas r
+          ON r.id = c.ruta_id
+        LEFT JOIN usuarios ur
+          ON ur.id = r.vendedor_id
+        LEFT JOIN usuarios ud
+          ON ud.id = c.vendedor_id
+        LEFT JOIN usuarios um
+          ON um.id = h.vendedor_id
+        ORDER BY h.created_at DESC
+      `);
+
+      function distanciaMetros(lat1, lon1, lat2, lon2) {
+        const aLat1 = Number(lat1);
+        const aLon1 = Number(lon1);
+        const aLat2 = Number(lat2);
+        const aLon2 = Number(lon2);
+
+        if (
+          !Number.isFinite(aLat1) ||
+          !Number.isFinite(aLon1) ||
+          !Number.isFinite(aLat2) ||
+          !Number.isFinite(aLon2)
+        ) {
+          return "";
+        }
+
+        const R = 6371000;
+        const rad = Math.PI / 180;
+        const dLat = (aLat2 - aLat1) * rad;
+        const dLon = (aLon2 - aLon1) * rad;
+        const a =
+          Math.sin(dLat / 2) ** 2 +
+          Math.cos(aLat1 * rad) *
+          Math.cos(aLat2 * rad) *
+          Math.sin(dLon / 2) ** 2;
+
+        return Math.round(
+          R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        );
+      }
+
+      const columnas = [
+        "fecha_hora",
+        "codigo_cliente",
+        "cliente",
+        "direccion",
+        "localidad",
+        "ruta",
+        "vendedor_titular",
+        "latitud_anterior",
+        "longitud_anterior",
+        "latitud_nueva",
+        "longitud_nueva",
+        "distancia_metros",
+        "origen",
+        "legajo_modifico",
+        "usuario_modifico"
+      ];
+
+      function valorCsv(valor) {
+        if (valor === null || valor === undefined) {
+          return "";
+        }
+        return '"' + String(valor).replace(/"/g, '""') + '"';
+      }
+
+      const filas = [columnas.join(",")];
+
+      result.rows.forEach(item => {
+        const registro = {
+          fecha_hora: item.created_at,
+          codigo_cliente: item.codigo_cliente,
+          cliente: item.nombre,
+          direccion: item.direccion,
+          localidad: item.localidad,
+          ruta: item.ruta,
+          vendedor_titular: item.vendedor_titular,
+          latitud_anterior: item.latitud_anterior,
+          longitud_anterior: item.longitud_anterior,
+          latitud_nueva: item.latitud_nueva,
+          longitud_nueva: item.longitud_nueva,
+          distancia_metros: distanciaMetros(
+            item.latitud_anterior,
+            item.longitud_anterior,
+            item.latitud_nueva,
+            item.longitud_nueva
+          ),
+          origen: item.origen,
+          legajo_modifico: item.legajo_modifico,
+          usuario_modifico: item.usuario_modifico
+        };
+
+        filas.push(
+          columnas
+            .map(columna => valorCsv(registro[columna]))
+            .join(",")
+        );
+      });
+
+      const csv = "\uFEFF" + filas.join("\r\n");
+      const fecha = new Date().toISOString().slice(0, 10);
+      const nombreArchivo =
+        "cambios_coordenadas_SEC_" + fecha + ".csv";
+
+      res.setHeader(
+        "Content-Type",
+        "text/csv; charset=utf-8"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${nombreArchivo}"`
+      );
+      res.send(csv);
+    } catch (error) {
+      console.error(
+        "ERROR EXPORTANDO CAMBIOS DE COORDENADAS:",
+        error
+      );
+
+      res.status(500).json({
+        error: "Error al exportar cambios de coordenadas",
+        detalle: error.message
+      });
+    }
+  }
+);
+
+/*
+=================================
 GESTIÓN DE EJECUCIÓN
 NO MODIFICA TODAVÍA EL RECORRIDO
 DEL VENDEDOR.
