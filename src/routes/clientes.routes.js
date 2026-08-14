@@ -1407,206 +1407,428 @@ router.get(
 
       const { vendedor_id } = req.params;
 
-      const result = await db.query(
+      /*
+      =================================
+      TIPO DE USUARIO
+      =================================
+      Si es TRADE_MARKETING, el plan se
+      toma de trade_visit_plan.
+      Para el vendedor normal se conserva
+      exactamente la lógica existente.
+      =================================
+      */
+
+      const usuarioResult = await db.query(
         `
-        WITH rutas_efectivas AS (
-
           SELECT
-            r.id AS ruta_id,
-
-            COALESCE(
-              reemplazo.vendedor_reemplazo_id,
-              r.vendedor_id
-            ) AS vendedor_efectivo_id
-
-          FROM rutas r
-
-          LEFT JOIN LATERAL (
-
-            SELECT
-              rr.vendedor_reemplazo_id
-
-            FROM reemplazos_ruta rr
-
-            WHERE rr.ruta_id = r.id
-              AND rr.activo = true
-              AND CURRENT_DATE
-                  BETWEEN rr.fecha_desde
-                      AND rr.fecha_hasta
-
-            ORDER BY rr.created_at DESC
-
-            LIMIT 1
-
-          ) reemplazo
-            ON true
-
-          WHERE r.activo = true
-        )
-
-        SELECT DISTINCT
-
-          c.id,
-          c.codigo_cliente,
-          c.nombre,
-          c.direccion,
-          c.localidad,
-          c.latitud,
-          c.longitud,
-          c.radio_geocerca,
-          c.categoria,
-
-          ca.nombre AS canal,
-          fr.nombre AS frecuencia,
-
-          c.es_ejecucion
-            AS programa_ejecucion,
-
-          c.semana_ejecucion,
-
-          r.nombre AS ruta,
-
-          COALESCE(
-            re.vendedor_efectivo_id,
-            c.vendedor_id
-          ) AS vendedor_id,
-
-          CASE
-
-            WHEN reemplazo_usuario.id IS NOT NULL
-            THEN TRIM(
-              COALESCE(reemplazo_usuario.nombre, '') ||
-              ' ' ||
-              COALESCE(reemplazo_usuario.apellido, '')
-            )
-
-            WHEN uc.id IS NOT NULL
-            THEN TRIM(
-              COALESCE(uc.nombre, '') ||
-              ' ' ||
-              COALESCE(uc.apellido, '')
-            )
-
-            ELSE NULL
-
-          END AS vendedor
-
-        FROM clientes c
-
-        LEFT JOIN canales ca
-          ON ca.id = c.canal_id
-
-        LEFT JOIN frecuencias fr
-          ON fr.id = c.frecuencia_id
-
-        LEFT JOIN rutas r
-          ON r.id = c.ruta_id
-
-        LEFT JOIN rutas_efectivas re
-          ON re.ruta_id = c.ruta_id
-
-        LEFT JOIN usuarios reemplazo_usuario
-          ON reemplazo_usuario.id =
-             re.vendedor_efectivo_id
-
-        LEFT JOIN usuarios uc
-          ON uc.id = c.vendedor_id
-
-        WHERE c.deleted_at IS NULL
-          AND c.activo = true
-
-          AND (
-
-            (
-              c.ruta_id IS NOT NULL
-              AND re.vendedor_efectivo_id = $1
-            )
-
-            OR
-
-            (
-              c.ruta_id IS NULL
-              AND c.vendedor_id = $1
-            )
-
-          )
-
-          AND (
-            c.es_ejecucion = false
-
-            OR (
-              c.es_ejecucion = true
-              AND c.semana_ejecucion IS NOT NULL
-              AND c.semana_ejecucion =
-                (
-                  ((EXTRACT(DAY FROM CURRENT_DATE)::int - 1) / 7) + 1
-                )
-            )
-          )
-
-          AND (
-
-            (
-              EXTRACT(
-                ISODOW FROM CURRENT_DATE
-              ) = 1
-              AND fr.lunes = true
-            )
-
-            OR
-
-            (
-              EXTRACT(
-                ISODOW FROM CURRENT_DATE
-              ) = 2
-              AND fr.martes = true
-            )
-
-            OR
-
-            (
-              EXTRACT(
-                ISODOW FROM CURRENT_DATE
-              ) = 3
-              AND fr.miercoles = true
-            )
-
-            OR
-
-            (
-              EXTRACT(
-                ISODOW FROM CURRENT_DATE
-              ) = 4
-              AND fr.jueves = true
-            )
-
-            OR
-
-            (
-              EXTRACT(
-                ISODOW FROM CURRENT_DATE
-              ) = 5
-              AND fr.viernes = true
-            )
-
-            OR
-
-            (
-              EXTRACT(
-                ISODOW FROM CURRENT_DATE
-              ) = 6
-              AND fr.sabado = true
-            )
-
-          )
-
-        ORDER BY
-          c.nombre ASC
+            id,
+            rol
+          FROM usuarios
+          WHERE id = $1
+          LIMIT 1
         `,
         [vendedor_id]
       );
 
-      res.json(result.rows);
+      if (usuarioResult.rows.length === 0) {
+        return res.status(404).json({
+          error: "Usuario no encontrado"
+        });
+      }
+
+      const rolUsuario =
+        String(
+          usuarioResult.rows[0].rol || ""
+        ).trim().toUpperCase();
+
+      /*
+      =================================
+      TRADE MARKETING
+      =================================
+      - usa trade_visit_plan
+      - respeta semana 1..5
+      - respeta la frecuencia del plan Trade
+      - NO modifica ruta/vendedor comercial
+      - devuelve ruta Trade como "ruta"
+        para que la APK pueda trabajar con
+        Ruta 40 / 41
+      =================================
+      */
+
+      if (rolUsuario === "TRADE_MARKETING") {
+
+        const result = await db.query(
+          `
+            SELECT DISTINCT
+
+              c.id,
+              c.codigo_cliente,
+              c.nombre,
+              c.direccion,
+              c.localidad,
+              c.latitud,
+              c.longitud,
+              c.radio_geocerca,
+              c.categoria,
+
+              ca.nombre AS canal,
+
+              fr_trade.nombre
+                AS frecuencia,
+
+              c.es_ejecucion
+                AS programa_ejecucion,
+
+              c.semana_ejecucion,
+
+              r_trade.nombre
+                AS ruta,
+
+              tvp.trade_id
+                AS vendedor_id,
+
+              TRIM(
+                COALESCE(u_trade.nombre, '') ||
+                ' ' ||
+                COALESCE(u_trade.apellido, '')
+              ) AS vendedor,
+
+              true
+                AS programa_trade,
+
+              tvp.semana
+                AS semana_trade,
+
+              tvp.ruta_trade_id,
+
+              r_comercial.nombre
+                AS ruta_comercial
+
+            FROM trade_visit_plan tvp
+
+            INNER JOIN clientes c
+              ON c.id = tvp.cliente_id
+
+            INNER JOIN usuarios u_trade
+              ON u_trade.id = tvp.trade_id
+
+            LEFT JOIN rutas r_trade
+              ON r_trade.id = tvp.ruta_trade_id
+
+            LEFT JOIN frecuencias fr_trade
+              ON fr_trade.id = tvp.frecuencia_id
+
+            LEFT JOIN canales ca
+              ON ca.id = c.canal_id
+
+            LEFT JOIN rutas r_comercial
+              ON r_comercial.id = c.ruta_id
+
+            WHERE tvp.trade_id = $1
+
+              AND tvp.activo = true
+
+              AND c.deleted_at IS NULL
+
+              AND c.activo = true
+
+              AND tvp.semana =
+                (
+                  (
+                    EXTRACT(
+                      DAY FROM CURRENT_DATE
+                    )::int - 1
+                  ) / 7
+                ) + 1
+
+              AND (
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 1
+                  AND fr_trade.lunes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 2
+                  AND fr_trade.martes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 3
+                  AND fr_trade.miercoles = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 4
+                  AND fr_trade.jueves = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 5
+                  AND fr_trade.viernes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 6
+                  AND fr_trade.sabado = true
+                )
+
+              )
+
+            ORDER BY
+              c.nombre ASC
+          `,
+          [vendedor_id]
+        );
+
+        return res.json(
+          result.rows
+        );
+      }
+
+      /*
+      =================================
+      VENDEDOR NORMAL
+      INCLUYE REEMPLAZOS DE RUTA
+      =================================
+      */
+
+      const result = await db.query(
+        `
+          WITH rutas_efectivas AS (
+
+            SELECT
+              r.id AS ruta_id,
+
+              COALESCE(
+                reemplazo.vendedor_reemplazo_id,
+                r.vendedor_id
+              ) AS vendedor_efectivo_id
+
+            FROM rutas r
+
+            LEFT JOIN LATERAL (
+
+              SELECT
+                rr.vendedor_reemplazo_id
+
+              FROM reemplazos_ruta rr
+
+              WHERE rr.ruta_id = r.id
+                AND rr.activo = true
+                AND CURRENT_DATE
+                    BETWEEN rr.fecha_desde
+                        AND rr.fecha_hasta
+
+              ORDER BY rr.created_at DESC
+
+              LIMIT 1
+
+            ) reemplazo
+              ON true
+
+            WHERE r.activo = true
+          )
+
+          SELECT DISTINCT
+
+            c.id,
+            c.codigo_cliente,
+            c.nombre,
+            c.direccion,
+            c.localidad,
+            c.latitud,
+            c.longitud,
+            c.radio_geocerca,
+            c.categoria,
+
+            ca.nombre AS canal,
+            fr.nombre AS frecuencia,
+
+            c.es_ejecucion
+              AS programa_ejecucion,
+
+            c.semana_ejecucion,
+
+            r.nombre AS ruta,
+
+            COALESCE(
+              re.vendedor_efectivo_id,
+              c.vendedor_id
+            ) AS vendedor_id,
+
+            CASE
+
+              WHEN reemplazo_usuario.id IS NOT NULL
+              THEN TRIM(
+                COALESCE(reemplazo_usuario.nombre, '') ||
+                ' ' ||
+                COALESCE(reemplazo_usuario.apellido, '')
+              )
+
+              WHEN uc.id IS NOT NULL
+              THEN TRIM(
+                COALESCE(uc.nombre, '') ||
+                ' ' ||
+                COALESCE(uc.apellido, '')
+              )
+
+              ELSE NULL
+
+            END AS vendedor,
+
+            false
+              AS programa_trade,
+
+            NULL::int
+              AS semana_trade,
+
+            NULL::uuid
+              AS ruta_trade_id,
+
+            r.nombre
+              AS ruta_comercial
+
+          FROM clientes c
+
+          LEFT JOIN canales ca
+            ON ca.id = c.canal_id
+
+          LEFT JOIN frecuencias fr
+            ON fr.id = c.frecuencia_id
+
+          LEFT JOIN rutas r
+            ON r.id = c.ruta_id
+
+          LEFT JOIN rutas_efectivas re
+            ON re.ruta_id = c.ruta_id
+
+          LEFT JOIN usuarios reemplazo_usuario
+            ON reemplazo_usuario.id =
+               re.vendedor_efectivo_id
+
+          LEFT JOIN usuarios uc
+            ON uc.id = c.vendedor_id
+
+          WHERE c.deleted_at IS NULL
+            AND c.activo = true
+
+            AND (
+
+              (
+                c.ruta_id IS NOT NULL
+                AND re.vendedor_efectivo_id = $1
+              )
+
+              OR
+
+              (
+                c.ruta_id IS NULL
+                AND c.vendedor_id = $1
+              )
+
+            )
+
+            AND (
+              c.es_ejecucion = false
+
+              OR (
+                c.es_ejecucion = true
+                AND c.semana_ejecucion IS NOT NULL
+                AND c.semana_ejecucion =
+                  (
+                    ((EXTRACT(DAY FROM CURRENT_DATE)::int - 1) / 7) + 1
+                  )
+              )
+            )
+
+            AND (
+
+              (
+                EXTRACT(
+                  ISODOW FROM CURRENT_DATE
+                ) = 1
+                AND fr.lunes = true
+              )
+
+              OR
+
+              (
+                EXTRACT(
+                  ISODOW FROM CURRENT_DATE
+                ) = 2
+                AND fr.martes = true
+              )
+
+              OR
+
+              (
+                EXTRACT(
+                  ISODOW FROM CURRENT_DATE
+                ) = 3
+                AND fr.miercoles = true
+              )
+
+              OR
+
+              (
+                EXTRACT(
+                  ISODOW FROM CURRENT_DATE
+                ) = 4
+                AND fr.jueves = true
+              )
+
+              OR
+
+              (
+                EXTRACT(
+                  ISODOW FROM CURRENT_DATE
+                ) = 5
+                AND fr.viernes = true
+              )
+
+              OR
+
+              (
+                EXTRACT(
+                  ISODOW FROM CURRENT_DATE
+                ) = 6
+                AND fr.sabado = true
+              )
+
+            )
+
+          ORDER BY
+            c.nombre ASC
+        `,
+        [vendedor_id]
+      );
+
+      res.json(
+        result.rows
+      );
 
     } catch (error) {
 
