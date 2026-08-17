@@ -627,6 +627,307 @@ router.get(
 
       /*
       =================================
+      PLAN DE TRABAJO TRADE MARKETING
+      =================================
+      Para rutas cuyo vendedor efectivo es TRADE_MARKETING,
+      el plan sale de trade_visit_plan y no de la ruta
+      comercial original del cliente.
+      */
+
+      const rolRutaResult = await db.query(
+        `
+          SELECT rol
+          FROM usuarios
+          WHERE id = $1
+          LIMIT 1
+        `,
+        [ruta.vendedor_efectivo_id]
+      );
+
+      const rolRuta =
+        String(
+          rolRutaResult.rows[0]?.rol || ""
+        ).trim().toUpperCase();
+
+      if (rolRuta === "TRADE_MARKETING") {
+
+        const tradeResult = await db.query(
+          `
+            WITH parametros AS (
+              SELECT
+                COALESCE(
+                  $2::date,
+                  CURRENT_DATE
+                ) AS fecha_consulta
+            ),
+
+            programados_trade AS (
+              SELECT DISTINCT
+                tvp.cliente_id,
+                tvp.semana AS semana_trade,
+                tvp.frecuencia_id,
+                tvp.ruta_trade_id
+              FROM trade_visit_plan tvp
+              INNER JOIN frecuencias fr_trade
+                ON fr_trade.id = tvp.frecuencia_id
+              CROSS JOIN parametros p
+              WHERE tvp.ruta_trade_id = $1
+                AND tvp.trade_id = $3
+                AND tvp.activo = true
+                AND tvp.semana =
+                  (
+                    ((EXTRACT(DAY FROM p.fecha_consulta)::int - 1) / 7) + 1
+                  )
+                AND (
+                  (
+                    EXTRACT(ISODOW FROM p.fecha_consulta) = 1
+                    AND fr_trade.lunes = true
+                  )
+                  OR (
+                    EXTRACT(ISODOW FROM p.fecha_consulta) = 2
+                    AND fr_trade.martes = true
+                  )
+                  OR (
+                    EXTRACT(ISODOW FROM p.fecha_consulta) = 3
+                    AND fr_trade.miercoles = true
+                  )
+                  OR (
+                    EXTRACT(ISODOW FROM p.fecha_consulta) = 4
+                    AND fr_trade.jueves = true
+                  )
+                  OR (
+                    EXTRACT(ISODOW FROM p.fecha_consulta) = 5
+                    AND fr_trade.viernes = true
+                  )
+                  OR (
+                    EXTRACT(ISODOW FROM p.fecha_consulta) = 6
+                    AND fr_trade.sabado = true
+                  )
+                )
+            ),
+
+            visitas_trade AS (
+              SELECT
+                v.cliente_id,
+                MIN(v.hora_llegada) AS hora_llegada,
+                MAX(v.hora_salida) AS hora_salida,
+                SUM(
+                  COALESCE(
+                    v.permanencia_segundos,
+                    0
+                  )
+                )::int AS permanencia_segundos,
+                COUNT(*)::int AS cantidad_visitas,
+                STRING_AGG(
+                  DISTINCT TRIM(
+                    COALESCE(uv.nombre, '') ||
+                    ' ' ||
+                    COALESCE(uv.apellido, '')
+                  ),
+                  ', '
+                ) AS vendedores_visita
+              FROM visitas v
+              LEFT JOIN usuarios uv
+                ON uv.id = v.vendedor_id
+              CROSS JOIN parametros p
+              WHERE v.vendedor_id = $3
+                AND v.fecha = p.fecha_consulta
+              GROUP BY v.cliente_id
+            ),
+
+            universo AS (
+              SELECT cliente_id
+              FROM programados_trade
+
+              UNION
+
+              SELECT cliente_id
+              FROM visitas_trade
+            )
+
+            SELECT
+              c.id,
+              c.codigo_cliente,
+              c.nombre,
+              c.direccion,
+              c.localidad,
+              c.latitud,
+              c.longitud,
+              c.radio_geocerca,
+
+              ca.nombre AS canal,
+
+              fr_trade.nombre AS frecuencia,
+
+              c.es_ejecucion
+                AS programa_ejecucion,
+
+              c.semana_ejecucion,
+
+              true AS programa_trade,
+
+              pt.semana_trade,
+
+              r_trade.nombre AS ruta,
+
+              (pt.cliente_id IS NOT NULL)
+                AS programado,
+
+              (vt.cliente_id IS NOT NULL)
+                AS visitado,
+
+              false AS es_ejecucion,
+
+              NULL::text AS motivo_ejecucion,
+
+              vt.hora_llegada,
+              vt.hora_salida,
+
+              COALESCE(
+                vt.permanencia_segundos,
+                0
+              )::int AS permanencia_segundos,
+
+              COALESCE(
+                vt.cantidad_visitas,
+                0
+              )::int AS cantidad_visitas,
+
+              vt.vendedores_visita,
+
+              CASE
+                WHEN c.latitud IS NULL
+                  OR c.longitud IS NULL
+                  OR c.latitud = 0
+                  OR c.longitud = 0
+                THEN false
+                ELSE true
+              END AS tiene_coordenadas
+
+            FROM universo u
+
+            INNER JOIN clientes c
+              ON c.id = u.cliente_id
+
+            LEFT JOIN programados_trade pt
+              ON pt.cliente_id = c.id
+
+            LEFT JOIN visitas_trade vt
+              ON vt.cliente_id = c.id
+
+            LEFT JOIN canales ca
+              ON ca.id = c.canal_id
+
+            LEFT JOIN frecuencias fr_trade
+              ON fr_trade.id = pt.frecuencia_id
+
+            LEFT JOIN rutas r_trade
+              ON r_trade.id = pt.ruta_trade_id
+
+            WHERE c.deleted_at IS NULL
+
+            ORDER BY
+              CASE
+                WHEN vt.cliente_id IS NOT NULL
+                THEN 1
+                ELSE 0
+              END,
+              c.nombre ASC
+          `,
+          [
+            ruta_id,
+            fechaConsulta,
+            ruta.vendedor_efectivo_id
+          ]
+        );
+
+        const clientesTrade =
+          tradeResult.rows;
+
+        const programadosTrade =
+          clientesTrade.filter(
+            cliente => cliente.programado
+          ).length;
+
+        const visitadosTrade =
+          clientesTrade.filter(
+            cliente =>
+              cliente.programado &&
+              cliente.visitado
+          ).length;
+
+        const pendientesTrade =
+          clientesTrade.filter(
+            cliente =>
+              cliente.programado &&
+              !cliente.visitado
+          ).length;
+
+        const sinCoordenadasTrade =
+          clientesTrade.filter(
+            cliente =>
+              cliente.programado &&
+              !cliente.tiene_coordenadas
+          ).length;
+
+        const noProgramadosVisitadosTrade =
+          clientesTrade.filter(
+            cliente =>
+              !cliente.programado &&
+              cliente.visitado
+          ).length;
+
+        const permanenciaTotalTrade =
+          clientesTrade.reduce(
+            (acumulado, cliente) =>
+              acumulado +
+              Number(
+                cliente.permanencia_segundos || 0
+              ),
+            0
+          );
+
+        const coberturaTrade =
+          programadosTrade > 0
+            ? Math.round(
+                (
+                  visitadosTrade /
+                  programadosTrade
+                ) * 100
+              )
+            : 0;
+
+        return res.json({
+          fecha:
+            fechaConsulta ||
+            new Date()
+              .toISOString()
+              .slice(0, 10),
+
+          ruta,
+
+          resumen: {
+            total: programadosTrade,
+            programados: programadosTrade,
+            visitados: visitadosTrade,
+            pendientes: pendientesTrade,
+            sin_coordenadas:
+              sinCoordenadasTrade,
+            no_programados_visitados:
+              noProgramadosVisitadosTrade,
+            permanencia_total_segundos:
+              permanenciaTotalTrade,
+            cobertura_porcentaje:
+              coberturaTrade
+          },
+
+          clientes:
+            clientesTrade
+        });
+      }
+
+      /*
+      =================================
       CLIENTES PROGRAMADOS DE LA RUTA
       =================================
       */
