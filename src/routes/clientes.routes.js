@@ -1756,7 +1756,49 @@ router.get(
       =================================
       */
 
+      /*
+      =================================
+      TRADE COMO REEMPLAZO COMERCIAL
+      =================================
+      Si un usuario TRADE_MARKETING tiene
+      hoy un reemplazo de ruta vigente,
+      NO carga su recorrido Trade.
+      En ese caso continúa por la lógica
+      normal de rutas_efectivas y recibe
+      solamente la ruta comercial que
+      está reemplazando.
+      =================================
+      */
+
+      let tieneReemplazoComercial = false;
+
       if (rolUsuario === "TRADE_MARKETING") {
+
+        const reemplazoComercialResult = await db.query(
+          `
+            SELECT rr.id
+            FROM reemplazos_ruta rr
+            INNER JOIN rutas r
+              ON r.id = rr.ruta_id
+            WHERE rr.vendedor_reemplazo_id = $1
+              AND rr.activo = true
+              AND r.activo = true
+              AND CURRENT_DATE
+                  BETWEEN rr.fecha_desde
+                      AND rr.fecha_hasta
+            LIMIT 1
+          `,
+          [vendedor_id]
+        );
+
+        tieneReemplazoComercial =
+          reemplazoComercialResult.rows.length > 0;
+      }
+
+      if (
+        rolUsuario === "TRADE_MARKETING" &&
+        !tieneReemplazoComercial
+      ) {
 
         const result = await db.query(
           `
@@ -3872,4 +3914,4 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = router
