@@ -1756,49 +1756,7 @@ router.get(
       =================================
       */
 
-      /*
-      =================================
-      TRADE COMO REEMPLAZO COMERCIAL
-      =================================
-      Si un usuario TRADE_MARKETING tiene
-      hoy un reemplazo de ruta vigente,
-      NO carga su recorrido Trade.
-      En ese caso continúa por la lógica
-      normal de rutas_efectivas y recibe
-      solamente la ruta comercial que
-      está reemplazando.
-      =================================
-      */
-
-      let tieneReemplazoComercial = false;
-
       if (rolUsuario === "TRADE_MARKETING") {
-
-        const reemplazoComercialResult = await db.query(
-          `
-            SELECT rr.id
-            FROM reemplazos_ruta rr
-            INNER JOIN rutas r
-              ON r.id = rr.ruta_id
-            WHERE rr.vendedor_reemplazo_id = $1
-              AND rr.activo = true
-              AND r.activo = true
-              AND CURRENT_DATE
-                  BETWEEN rr.fecha_desde
-                      AND rr.fecha_hasta
-            LIMIT 1
-          `,
-          [vendedor_id]
-        );
-
-        tieneReemplazoComercial =
-          reemplazoComercialResult.rows.length > 0;
-      }
-
-      if (
-        rolUsuario === "TRADE_MARKETING" &&
-        !tieneReemplazoComercial
-      ) {
 
         const result = await db.query(
           `
@@ -3430,6 +3388,918 @@ router.patch(
   }
 );
 
+
+/*
+=================================
+TRADE MARKETING - ADMINISTRACION
+=================================
+*/
+
+/*
+GET /clientes/trade/plan
+Filtros opcionales:
+trade_id, ruta_trade_id, frecuencia_id, semana, activo
+*/
+router.get(
+  "/trade/plan",
+  async (req, res) => {
+    try {
+      const {
+        trade_id,
+        ruta_trade_id,
+        frecuencia_id,
+        semana,
+        activo
+      } = req.query;
+
+      const params = [];
+      const where = [
+        "c.deleted_at IS NULL"
+      ];
+
+      if (trade_id) {
+        params.push(trade_id);
+        where.push(
+          `tvp.trade_id = $${params.length}::uuid`
+        );
+      }
+
+      if (ruta_trade_id) {
+        params.push(ruta_trade_id);
+        where.push(
+          `tvp.ruta_trade_id = $${params.length}::uuid`
+        );
+      }
+
+      if (frecuencia_id) {
+        params.push(frecuencia_id);
+        where.push(
+          `tvp.frecuencia_id = $${params.length}::uuid`
+        );
+      }
+
+      if (semana) {
+        const numeroSemana = Number(semana);
+
+        if (
+          !Number.isInteger(numeroSemana) ||
+          numeroSemana < 1 ||
+          numeroSemana > 5
+        ) {
+          return res.status(400).json({
+            error: "La semana debe estar entre 1 y 5"
+          });
+        }
+
+        params.push(numeroSemana);
+        where.push(
+          `tvp.semana = $${params.length}`
+        );
+      }
+
+      if (
+        activo === "true" ||
+        activo === "false"
+      ) {
+        params.push(activo === "true");
+        where.push(
+          `tvp.activo = $${params.length}`
+        );
+      }
+
+      const result = await db.query(
+        `
+          SELECT
+            tvp.id,
+            tvp.cliente_id,
+            c.codigo_cliente,
+            c.nombre AS cliente,
+            c.direccion,
+            c.localidad,
+
+            tvp.trade_id,
+            u.legajo AS legajo_trade,
+            TRIM(
+              COALESCE(u.nombre, '') || ' ' ||
+              COALESCE(u.apellido, '')
+            ) AS trade,
+
+            tvp.ruta_trade_id,
+            r.nombre AS ruta_trade,
+
+            tvp.frecuencia_id,
+            f.nombre AS frecuencia,
+
+            tvp.semana,
+            tvp.activo,
+            tvp.created_at,
+            tvp.updated_at
+
+          FROM trade_visit_plan tvp
+
+          INNER JOIN clientes c
+            ON c.id = tvp.cliente_id
+
+          INNER JOIN usuarios u
+            ON u.id = tvp.trade_id
+
+          LEFT JOIN rutas r
+            ON r.id = tvp.ruta_trade_id
+
+          INNER JOIN frecuencias f
+            ON f.id = tvp.frecuencia_id
+
+          WHERE ${where.join(" AND ")}
+
+          ORDER BY
+            u.apellido,
+            u.nombre,
+            r.nombre,
+            tvp.semana,
+            f.nombre,
+            c.nombre
+        `,
+        params
+      );
+
+      res.json(result.rows);
+
+    } catch (error) {
+      console.error(
+        "ERROR LISTANDO PLAN TRADE:",
+        error
+      );
+
+      res.status(500).json({
+        error: "Error al listar Plan Trade",
+        detalle: error.message
+      });
+    }
+  }
+);
+
+/*
+POST /clientes/trade/validar-codigos
+BODY:
+{
+  codigos: ["53523","12551",...]
+}
+*/
+router.post(
+  "/trade/validar-codigos",
+  async (req, res) => {
+    try {
+      const codigosEntrada =
+        Array.isArray(req.body?.codigos)
+          ? req.body.codigos
+          : [];
+
+      const codigos = [
+        ...new Set(
+          codigosEntrada
+            .map(codigo =>
+              String(codigo ?? "").trim()
+            )
+            .filter(Boolean)
+        )
+      ];
+
+      if (codigos.length === 0) {
+        return res.status(400).json({
+          error: "No se ingresaron códigos de cliente"
+        });
+      }
+
+      const encontradosResult =
+        await db.query(
+          `
+            SELECT
+              id,
+              codigo_cliente,
+              nombre,
+              direccion,
+              localidad
+            FROM clientes
+            WHERE deleted_at IS NULL
+              AND codigo_cliente = ANY($1::text[])
+            ORDER BY codigo_cliente
+          `,
+          [codigos]
+        );
+
+      const encontrados =
+        encontradosResult.rows;
+
+      const encontradosSet =
+        new Set(
+          encontrados.map(cliente =>
+            String(cliente.codigo_cliente)
+          )
+        );
+
+      const noEncontrados =
+        codigos.filter(
+          codigo =>
+            !encontradosSet.has(
+              String(codigo)
+            )
+        );
+
+      const idsClientes =
+        encontrados.map(
+          cliente => cliente.id
+        );
+
+      let asignacionesActivas = [];
+
+      if (idsClientes.length > 0) {
+        const asignacionesResult =
+          await db.query(
+            `
+              SELECT
+                tvp.id,
+                c.codigo_cliente,
+                c.nombre AS cliente,
+                u.legajo AS legajo_trade,
+                TRIM(
+                  COALESCE(u.nombre, '') || ' ' ||
+                  COALESCE(u.apellido, '')
+                ) AS trade,
+                r.nombre AS ruta_trade,
+                f.nombre AS frecuencia,
+                tvp.semana,
+                tvp.activo
+
+              FROM trade_visit_plan tvp
+
+              INNER JOIN clientes c
+                ON c.id = tvp.cliente_id
+
+              INNER JOIN usuarios u
+                ON u.id = tvp.trade_id
+
+              LEFT JOIN rutas r
+                ON r.id = tvp.ruta_trade_id
+
+              INNER JOIN frecuencias f
+                ON f.id = tvp.frecuencia_id
+
+              WHERE tvp.cliente_id =
+                ANY($1::uuid[])
+                AND tvp.activo = true
+
+              ORDER BY
+                c.codigo_cliente,
+                tvp.semana,
+                f.nombre
+            `,
+            [idsClientes]
+          );
+
+        asignacionesActivas =
+          asignacionesResult.rows;
+      }
+
+      res.json({
+        ingresados:
+          codigosEntrada.length,
+
+        unicos:
+          codigos.length,
+
+        encontrados:
+          encontrados.length,
+
+        no_encontrados:
+          noEncontrados.length,
+
+        codigos_no_encontrados:
+          noEncontrados,
+
+        clientes:
+          encontrados,
+
+        asignaciones_activas:
+          asignacionesActivas
+      });
+
+    } catch (error) {
+      console.error(
+        "ERROR VALIDANDO CODIGOS TRADE:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al validar códigos Trade",
+        detalle:
+          error.message
+      });
+    }
+  }
+);
+
+/*
+POST /clientes/trade/asignar-masivo
+
+BODY:
+{
+  codigos: ["53523","12551"],
+  trade_id: "...",
+  ruta_trade_id: "...",
+  frecuencia_id: "...",
+  semana: 2,
+  reemplazar_existentes: true
+}
+*/
+router.post(
+  "/trade/asignar-masivo",
+  async (req, res) => {
+
+    const client =
+      await db.connect();
+
+    try {
+      const {
+        codigos,
+        trade_id,
+        ruta_trade_id,
+        frecuencia_id,
+        semana,
+        reemplazar_existentes
+      } = req.body || {};
+
+      const codigosLimpios = [
+        ...new Set(
+          (
+            Array.isArray(codigos)
+              ? codigos
+              : []
+          )
+            .map(codigo =>
+              String(codigo ?? "").trim()
+            )
+            .filter(Boolean)
+        )
+      ];
+
+      const numeroSemana =
+        Number(semana);
+
+      if (codigosLimpios.length === 0) {
+        return res.status(400).json({
+          error:
+            "Debe ingresar al menos un código de cliente"
+        });
+      }
+
+      if (!trade_id) {
+        return res.status(400).json({
+          error:
+            "Debe seleccionar un responsable Trade"
+        });
+      }
+
+      if (!ruta_trade_id) {
+        return res.status(400).json({
+          error:
+            "Debe seleccionar una Ruta Trade"
+        });
+      }
+
+      if (!frecuencia_id) {
+        return res.status(400).json({
+          error:
+            "Debe seleccionar un día/frecuencia"
+        });
+      }
+
+      if (
+        !Number.isInteger(numeroSemana) ||
+        numeroSemana < 1 ||
+        numeroSemana > 5
+      ) {
+        return res.status(400).json({
+          error:
+            "La semana debe estar entre 1 y 5"
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const tradeResult =
+        await client.query(
+          `
+            SELECT id
+            FROM usuarios
+            WHERE id = $1
+              AND activo = true
+              AND UPPER(TRIM(rol)) =
+                'TRADE_MARKETING'
+            LIMIT 1
+          `,
+          [trade_id]
+        );
+
+      if (
+        tradeResult.rows.length === 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          error:
+            "El responsable seleccionado no es un usuario Trade activo"
+        });
+      }
+
+      const rutaResult =
+        await client.query(
+          `
+            SELECT id
+            FROM rutas
+            WHERE id = $1
+              AND activo = true
+            LIMIT 1
+          `,
+          [ruta_trade_id]
+        );
+
+      if (
+        rutaResult.rows.length === 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          error:
+            "La Ruta Trade seleccionada no existe o está inactiva"
+        });
+      }
+
+      const frecuenciaResult =
+        await client.query(
+          `
+            SELECT id
+            FROM frecuencias
+            WHERE id = $1
+            LIMIT 1
+          `,
+          [frecuencia_id]
+        );
+
+      if (
+        frecuenciaResult.rows.length === 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          error:
+            "La frecuencia seleccionada no existe"
+        });
+      }
+
+      const clientesResult =
+        await client.query(
+          `
+            SELECT
+              id,
+              codigo_cliente,
+              nombre
+            FROM clientes
+            WHERE deleted_at IS NULL
+              AND codigo_cliente =
+                ANY($1::text[])
+          `,
+          [codigosLimpios]
+        );
+
+      const clientes =
+        clientesResult.rows;
+
+      const encontradosSet =
+        new Set(
+          clientes.map(cliente =>
+            String(cliente.codigo_cliente)
+          )
+        );
+
+      const noEncontrados =
+        codigosLimpios.filter(
+          codigo =>
+            !encontradosSet.has(
+              String(codigo)
+            )
+        );
+
+      if (clientes.length === 0) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          error:
+            "Ninguno de los códigos ingresados existe en SEC",
+          codigos_no_encontrados:
+            noEncontrados
+        });
+      }
+
+      const idsClientes =
+        clientes.map(
+          cliente => cliente.id
+        );
+
+      if (reemplazar_existentes === true) {
+        await client.query(
+          `
+            UPDATE trade_visit_plan
+            SET
+              activo = false,
+              updated_at = NOW()
+            WHERE cliente_id =
+              ANY($1::uuid[])
+              AND activo = true
+          `,
+          [idsClientes]
+        );
+      } else {
+        const conflictosResult =
+          await client.query(
+            `
+              SELECT
+                c.codigo_cliente,
+                c.nombre,
+                u.legajo,
+                TRIM(
+                  COALESCE(u.nombre, '') ||
+                  ' ' ||
+                  COALESCE(u.apellido, '')
+                ) AS trade,
+                r.nombre AS ruta_trade,
+                f.nombre AS frecuencia,
+                tvp.semana
+
+              FROM trade_visit_plan tvp
+
+              INNER JOIN clientes c
+                ON c.id = tvp.cliente_id
+
+              INNER JOIN usuarios u
+                ON u.id = tvp.trade_id
+
+              LEFT JOIN rutas r
+                ON r.id = tvp.ruta_trade_id
+
+              INNER JOIN frecuencias f
+                ON f.id = tvp.frecuencia_id
+
+              WHERE tvp.cliente_id =
+                ANY($1::uuid[])
+                AND tvp.activo = true
+            `,
+            [idsClientes]
+          );
+
+        if (
+          conflictosResult.rows.length > 0
+        ) {
+          await client.query("ROLLBACK");
+
+          return res.status(409).json({
+            error:
+              "Hay clientes con asignaciones Trade activas. Active 'Reemplazar asignación existente' o revise los conflictos.",
+            conflictos:
+              conflictosResult.rows
+          });
+        }
+      }
+
+      const insertados = [];
+
+      for (const cliente of clientes) {
+
+        const resultado =
+          await client.query(
+            `
+              INSERT INTO trade_visit_plan (
+                cliente_id,
+                trade_id,
+                ruta_trade_id,
+                frecuencia_id,
+                semana,
+                activo,
+                created_at,
+                updated_at
+              )
+              VALUES (
+                $1,$2,$3,$4,$5,true,
+                NOW(),NOW()
+              )
+
+              ON CONFLICT (
+                cliente_id,
+                trade_id,
+                semana,
+                frecuencia_id
+              )
+
+              DO UPDATE SET
+                ruta_trade_id =
+                  EXCLUDED.ruta_trade_id,
+                activo = true,
+                updated_at = NOW()
+
+              RETURNING *
+            `,
+            [
+              cliente.id,
+              trade_id,
+              ruta_trade_id,
+              frecuencia_id,
+              numeroSemana
+            ]
+          );
+
+        insertados.push(
+          resultado.rows[0]
+        );
+      }
+
+      await client.query("COMMIT");
+
+      res.json({
+        mensaje:
+          "Asignación Trade realizada correctamente",
+
+        ingresados:
+          codigosLimpios.length,
+
+        encontrados:
+          clientes.length,
+
+        asignados:
+          insertados.length,
+
+        no_encontrados:
+          noEncontrados.length,
+
+        codigos_no_encontrados:
+          noEncontrados
+      });
+
+    } catch (error) {
+
+      await client.query("ROLLBACK");
+
+      console.error(
+        "ERROR ASIGNANDO TRADE MASIVO:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al realizar la asignación Trade",
+        detalle:
+          error.message
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
+
+/*
+PATCH /clientes/trade/plan/:id
+BODY:
+{
+  trade_id,
+  ruta_trade_id,
+  frecuencia_id,
+  semana,
+  activo
+}
+*/
+router.patch(
+  "/trade/plan/:id",
+  async (req, res) => {
+    try {
+      const {
+        trade_id,
+        ruta_trade_id,
+        frecuencia_id,
+        semana,
+        activo
+      } = req.body || {};
+
+      const numeroSemana =
+        Number(semana);
+
+      if (
+        !trade_id ||
+        !ruta_trade_id ||
+        !frecuencia_id
+      ) {
+        return res.status(400).json({
+          error:
+            "Faltan datos de la asignación Trade"
+        });
+      }
+
+      if (
+        !Number.isInteger(numeroSemana) ||
+        numeroSemana < 1 ||
+        numeroSemana > 5
+      ) {
+        return res.status(400).json({
+          error:
+            "La semana debe estar entre 1 y 5"
+        });
+      }
+
+      const result =
+        await db.query(
+          `
+            UPDATE trade_visit_plan
+            SET
+              trade_id = $1,
+              ruta_trade_id = $2,
+              frecuencia_id = $3,
+              semana = $4,
+              activo = $5,
+              updated_at = NOW()
+            WHERE id = $6
+            RETURNING *
+          `,
+          [
+            trade_id,
+            ruta_trade_id,
+            frecuencia_id,
+            numeroSemana,
+            activo !== false,
+            req.params.id
+          ]
+        );
+
+      if (
+        result.rows.length === 0
+      ) {
+        return res.status(404).json({
+          error:
+            "Asignación Trade no encontrada"
+        });
+      }
+
+      res.json({
+        mensaje:
+          "Asignación Trade actualizada",
+        asignacion:
+          result.rows[0]
+      });
+
+    } catch (error) {
+      console.error(
+        "ERROR ACTUALIZANDO PLAN TRADE:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al actualizar Plan Trade",
+        detalle:
+          error.message
+      });
+    }
+  }
+);
+
+/*
+GET /clientes/trade/exportar/csv
+*/
+router.get(
+  "/trade/exportar/csv",
+  async (req, res) => {
+    try {
+      const result =
+        await db.query(
+          `
+            SELECT
+              c.codigo_cliente,
+              c.nombre AS cliente,
+              u.legajo AS legajo_trade,
+              TRIM(
+                COALESCE(u.nombre, '') ||
+                ' ' ||
+                COALESCE(u.apellido, '')
+              ) AS trade,
+              r.nombre AS ruta_trade,
+              f.nombre AS frecuencia,
+              tvp.semana,
+              CASE
+                WHEN tvp.activo
+                THEN 'SI'
+                ELSE 'NO'
+              END AS activo
+
+            FROM trade_visit_plan tvp
+
+            INNER JOIN clientes c
+              ON c.id = tvp.cliente_id
+
+            INNER JOIN usuarios u
+              ON u.id = tvp.trade_id
+
+            LEFT JOIN rutas r
+              ON r.id = tvp.ruta_trade_id
+
+            INNER JOIN frecuencias f
+              ON f.id = tvp.frecuencia_id
+
+            WHERE c.deleted_at IS NULL
+
+            ORDER BY
+              u.apellido,
+              u.nombre,
+              r.nombre,
+              tvp.semana,
+              f.nombre,
+              c.codigo_cliente
+          `
+        );
+
+      const columnas = [
+        "codigo_cliente",
+        "cliente",
+        "legajo_trade",
+        "trade",
+        "ruta_trade",
+        "frecuencia",
+        "semana",
+        "activo"
+      ];
+
+      const valorCsv =
+        valor => {
+          const texto =
+            String(valor ?? "")
+              .replace(/"/g, '""');
+
+          return `"${texto}"`;
+        };
+
+      const filas = [
+        columnas.join(",")
+      ];
+
+      result.rows.forEach(
+        fila => {
+          filas.push(
+            columnas
+              .map(
+                columna =>
+                  valorCsv(
+                    fila[columna]
+                  )
+              )
+              .join(",")
+          );
+        }
+      );
+
+      const csv =
+        "\uFEFF" +
+        filas.join("\r\n");
+
+      const fecha =
+        new Date()
+          .toISOString()
+          .slice(0, 10);
+
+      res.setHeader(
+        "Content-Type",
+        "text/csv; charset=utf-8"
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="plan_trade_${fecha}.csv"`
+      );
+
+      res.send(csv);
+
+    } catch (error) {
+      console.error(
+        "ERROR EXPORTANDO PLAN TRADE:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al exportar Plan Trade",
+        detalle:
+          error.message
+      });
+    }
+  }
+);
+
 /*
 =================================
 GET CLIENTE POR ID
@@ -3914,4 +4784,4 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-module.exports = router
+module.exports = router;
