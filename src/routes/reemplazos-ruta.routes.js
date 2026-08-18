@@ -32,9 +32,10 @@ router.get("/vendedores", async (req, res) => {
         nombre,
         apellido,
         legajo,
+        rol,
         TRIM(COALESCE(nombre,'') || ' ' || COALESCE(apellido,'')) AS nombre_completo
       FROM usuarios
-      WHERE UPPER(TRIM(rol)) = 'VENDEDOR'
+      WHERE UPPER(TRIM(rol)) IN ('VENDEDOR', 'TRADE_MARKETING')
         AND activo = true
       ORDER BY nombre, apellido
     `);
@@ -122,6 +123,25 @@ router.post("/", async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(400).json({
         error: "El reemplazante no puede ser el mismo vendedor titular"
+      });
+    }
+
+    const reemplazante = await client.query(
+      `
+        SELECT id
+        FROM usuarios
+        WHERE id = $1
+          AND activo = true
+          AND UPPER(TRIM(rol)) IN ('VENDEDOR', 'TRADE_MARKETING')
+        LIMIT 1
+      `,
+      [vendedor_reemplazo_id]
+    );
+
+    if (reemplazante.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "El reemplazante debe ser un usuario activo con rol VENDEDOR o TRADE_MARKETING"
       });
     }
 
