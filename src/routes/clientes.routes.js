@@ -1756,7 +1756,46 @@ router.get(
       =================================
       */
 
+      /*
+      =================================
+      TRADE COMO REEMPLAZO COMERCIAL
+      =================================
+      Si un usuario Trade tiene hoy un
+      reemplazo de ruta vigente, no carga
+      su recorrido Trade. Continúa por la
+      lógica normal de rutas efectivas.
+      */
+
+      let tieneReemplazoComercial = false;
+
       if (rolUsuario === "TRADE_MARKETING") {
+
+        const reemplazoComercialResult =
+          await db.query(
+            `
+              SELECT rr.id
+              FROM reemplazos_ruta rr
+              INNER JOIN rutas r
+                ON r.id = rr.ruta_id
+              WHERE rr.vendedor_reemplazo_id = $1
+                AND rr.activo = true
+                AND r.activo = true
+                AND CURRENT_DATE
+                    BETWEEN rr.fecha_desde
+                        AND rr.fecha_hasta
+              LIMIT 1
+            `,
+            [vendedor_id]
+          );
+
+        tieneReemplazoComercial =
+          reemplazoComercialResult.rows.length > 0;
+      }
+
+      if (
+        rolUsuario === "TRADE_MARKETING" &&
+        !tieneReemplazoComercial
+      ) {
 
         const result = await db.query(
           `
@@ -3743,8 +3782,23 @@ router.post(
         )
       ];
 
+      const semanaTexto =
+        String(semana ?? "")
+          .trim()
+          .toUpperCase();
+
+      const todasLasSemanas =
+        semanaTexto === "TODAS";
+
       const numeroSemana =
-        Number(semana);
+        todasLasSemanas
+          ? null
+          : Number(semana);
+
+      const semanasAsignar =
+        todasLasSemanas
+          ? [1, 2, 3, 4, 5]
+          : [numeroSemana];
 
       if (codigosLimpios.length === 0) {
         return res.status(400).json({
@@ -3775,13 +3829,16 @@ router.post(
       }
 
       if (
-        !Number.isInteger(numeroSemana) ||
-        numeroSemana < 1 ||
-        numeroSemana > 5
+        !todasLasSemanas &&
+        (
+          !Number.isInteger(numeroSemana) ||
+          numeroSemana < 1 ||
+          numeroSemana > 5
+        )
       ) {
         return res.status(400).json({
           error:
-            "La semana debe estar entre 1 y 5"
+            "La semana debe estar entre 1 y 5 o ser TODAS"
         });
       }
 
@@ -3975,51 +4032,54 @@ router.post(
 
       for (const cliente of clientes) {
 
-        const resultado =
-          await client.query(
-            `
-              INSERT INTO trade_visit_plan (
-                cliente_id,
+        for (const semanaAsignar of semanasAsignar) {
+
+          const resultado =
+            await client.query(
+              `
+                INSERT INTO trade_visit_plan (
+                  cliente_id,
+                  trade_id,
+                  ruta_trade_id,
+                  frecuencia_id,
+                  semana,
+                  activo,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  $1,$2,$3,$4,$5,true,
+                  NOW(),NOW()
+                )
+
+                ON CONFLICT (
+                  cliente_id,
+                  trade_id,
+                  semana,
+                  frecuencia_id
+                )
+
+                DO UPDATE SET
+                  ruta_trade_id =
+                    EXCLUDED.ruta_trade_id,
+                  activo = true,
+                  updated_at = NOW()
+
+                RETURNING *
+              `,
+              [
+                cliente.id,
                 trade_id,
                 ruta_trade_id,
                 frecuencia_id,
-                semana,
-                activo,
-                created_at,
-                updated_at
-              )
-              VALUES (
-                $1,$2,$3,$4,$5,true,
-                NOW(),NOW()
-              )
+                semanaAsignar
+              ]
+            );
 
-              ON CONFLICT (
-                cliente_id,
-                trade_id,
-                semana,
-                frecuencia_id
-              )
-
-              DO UPDATE SET
-                ruta_trade_id =
-                  EXCLUDED.ruta_trade_id,
-                activo = true,
-                updated_at = NOW()
-
-              RETURNING *
-            `,
-            [
-              cliente.id,
-              trade_id,
-              ruta_trade_id,
-              frecuencia_id,
-              numeroSemana
-            ]
+          insertados.push(
+            resultado.rows[0]
           );
-
-        insertados.push(
-          resultado.rows[0]
-        );
+        }
       }
 
       await client.query("COMMIT");
@@ -4035,7 +4095,13 @@ router.post(
           clientes.length,
 
         asignados:
+          clientes.length,
+
+        registros_generados:
           insertados.length,
+
+        todas_las_semanas:
+          todasLasSemanas,
 
         no_encontrados:
           noEncontrados.length,
@@ -4080,6 +4146,10 @@ BODY:
 router.patch(
   "/trade/plan/:id",
   async (req, res) => {
+
+    const client =
+      await db.connect();
+
     try {
       const {
         trade_id,
@@ -4089,8 +4159,18 @@ router.patch(
         activo
       } = req.body || {};
 
+      const semanaTexto =
+        String(semana ?? "")
+          .trim()
+          .toUpperCase();
+
+      const todasLasSemanas =
+        semanaTexto === "TODAS";
+
       const numeroSemana =
-        Number(semana);
+        todasLasSemanas
+          ? null
+          : Number(semana);
 
       if (
         !trade_id ||
@@ -4104,18 +4184,137 @@ router.patch(
       }
 
       if (
-        !Number.isInteger(numeroSemana) ||
-        numeroSemana < 1 ||
-        numeroSemana > 5
+        !todasLasSemanas &&
+        (
+          !Number.isInteger(numeroSemana) ||
+          numeroSemana < 1 ||
+          numeroSemana > 5
+        )
       ) {
         return res.status(400).json({
           error:
-            "La semana debe estar entre 1 y 5"
+            "La semana debe estar entre 1 y 5 o ser TODAS"
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const actualResult =
+        await client.query(
+          `
+            SELECT
+              id,
+              cliente_id
+            FROM trade_visit_plan
+            WHERE id = $1
+            LIMIT 1
+          `,
+          [req.params.id]
+        );
+
+      if (
+        actualResult.rows.length === 0
+      ) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          error:
+            "Asignación Trade no encontrada"
+        });
+      }
+
+      const clienteId =
+        actualResult.rows[0].cliente_id;
+
+      if (todasLasSemanas) {
+
+        /*
+        Si se elige TODAS:
+        - se inactivan las asignaciones activas
+          actuales de ese cliente;
+        - se crean/reactivan semanas 1..5
+          con la nueva asignación elegida.
+        */
+
+        await client.query(
+          `
+            UPDATE trade_visit_plan
+            SET
+              activo = false,
+              updated_at = NOW()
+            WHERE cliente_id = $1
+              AND activo = true
+          `,
+          [clienteId]
+        );
+
+        const asignaciones = [];
+
+        for (
+          const semanaAsignar
+          of [1, 2, 3, 4, 5]
+        ) {
+          const resultado =
+            await client.query(
+              `
+                INSERT INTO trade_visit_plan (
+                  cliente_id,
+                  trade_id,
+                  ruta_trade_id,
+                  frecuencia_id,
+                  semana,
+                  activo,
+                  created_at,
+                  updated_at
+                )
+                VALUES (
+                  $1,$2,$3,$4,$5,$6,
+                  NOW(),NOW()
+                )
+
+                ON CONFLICT (
+                  cliente_id,
+                  trade_id,
+                  semana,
+                  frecuencia_id
+                )
+
+                DO UPDATE SET
+                  ruta_trade_id =
+                    EXCLUDED.ruta_trade_id,
+                  activo =
+                    EXCLUDED.activo,
+                  updated_at = NOW()
+
+                RETURNING *
+              `,
+              [
+                clienteId,
+                trade_id,
+                ruta_trade_id,
+                frecuencia_id,
+                semanaAsignar,
+                activo !== false
+              ]
+            );
+
+          asignaciones.push(
+            resultado.rows[0]
+          );
+        }
+
+        await client.query("COMMIT");
+
+        return res.json({
+          mensaje:
+            "Asignación Trade actualizada para todas las semanas",
+          todas_las_semanas: true,
+          asignaciones
         });
       }
 
       const result =
-        await db.query(
+        await client.query(
           `
             UPDATE trade_visit_plan
             SET
@@ -4138,23 +4337,20 @@ router.patch(
           ]
         );
 
-      if (
-        result.rows.length === 0
-      ) {
-        return res.status(404).json({
-          error:
-            "Asignación Trade no encontrada"
-        });
-      }
+      await client.query("COMMIT");
 
       res.json({
         mensaje:
           "Asignación Trade actualizada",
+        todas_las_semanas: false,
         asignacion:
           result.rows[0]
       });
 
     } catch (error) {
+
+      await client.query("ROLLBACK");
+
       console.error(
         "ERROR ACTUALIZANDO PLAN TRADE:",
         error
@@ -4166,6 +4362,9 @@ router.patch(
         detalle:
           error.message
       });
+
+    } finally {
+      client.release();
     }
   }
 );
