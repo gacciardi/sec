@@ -209,8 +209,237 @@ CLIENTES ASIGNADOS
 async function obtenerClientesAsignados(
   vendedorId
 ) {
+  /*
+  =================================
+  TIPO DE USUARIO
+  =================================
+  La geocerca debe trabajar con el
+  mismo conjunto de clientes que el
+  plan diario del vendedor.
+  =================================
+  */
+
+  const usuarioResult = await db.query(
+    `
+    SELECT id, rol
+    FROM usuarios
+    WHERE id = $1
+      AND activo = true
+    LIMIT 1
+    `,
+    [vendedorId]
+  );
+
+  if (usuarioResult.rows.length === 0) {
+    return [];
+  }
+
+  const rolUsuario =
+    String(
+      usuarioResult.rows[0].rol || ""
+    ).trim().toUpperCase();
+
+  /*
+  =================================
+  TRADE COMO REEMPLAZO COMERCIAL
+  =================================
+  Si Trade está reemplazando una ruta
+  hoy, trabaja como vendedor comercial
+  y NO con trade_visit_plan.
+  =================================
+  */
+
+  let tieneReemplazoComercial = false;
+
+  if (rolUsuario === "TRADE_MARKETING") {
+    const reemplazoResult = await db.query(
+      `
+      SELECT rr.id
+      FROM reemplazos_ruta rr
+      INNER JOIN rutas r
+        ON r.id = rr.ruta_id
+      WHERE rr.vendedor_reemplazo_id = $1
+        AND rr.activo = true
+        AND r.activo = true
+        AND CURRENT_DATE
+            BETWEEN rr.fecha_desde
+                AND rr.fecha_hasta
+      LIMIT 1
+      `,
+      [vendedorId]
+    );
+
+    tieneReemplazoComercial =
+      reemplazoResult.rows.length > 0;
+  }
+
+  /*
+  =================================
+  TRADE MARKETING
+  =================================
+  Usa exclusivamente el Plan Trade
+  correspondiente al día y semana.
+  =================================
+  */
+
+  if (
+    rolUsuario === "TRADE_MARKETING" &&
+    !tieneReemplazoComercial
+  ) {
+    const result = await db.query(
+      `
+      SELECT DISTINCT
+        c.id,
+        c.codigo_cliente,
+        c.nombre,
+        c.direccion,
+        c.localidad,
+        c.latitud,
+        c.longitud,
+
+        COALESCE(
+          c.radio_geocerca,
+          30
+        ) AS radio_geocerca
+
+      FROM trade_visit_plan tvp
+
+      INNER JOIN clientes c
+        ON c.id = tvp.cliente_id
+
+      LEFT JOIN frecuencias fr_trade
+        ON fr_trade.id = tvp.frecuencia_id
+
+      LEFT JOIN rutas r_trade
+        ON r_trade.id = tvp.ruta_trade_id
+
+      WHERE tvp.trade_id = $1
+        AND tvp.activo = true
+
+        AND c.deleted_at IS NULL
+        AND c.activo = true
+
+        AND c.latitud IS NOT NULL
+        AND c.longitud IS NOT NULL
+        AND c.latitud <> 0
+        AND c.longitud <> 0
+
+        AND (
+          r_trade.id IS NULL
+          OR r_trade.activo = true
+        )
+
+        AND tvp.semana =
+          (
+            (
+              EXTRACT(
+                DAY FROM CURRENT_DATE
+              )::int - 1
+            ) / 7
+          ) + 1
+
+        AND (
+          (
+            EXTRACT(
+              ISODOW FROM CURRENT_DATE
+            ) = 1
+            AND fr_trade.lunes = true
+          )
+
+          OR (
+            EXTRACT(
+              ISODOW FROM CURRENT_DATE
+            ) = 2
+            AND fr_trade.martes = true
+          )
+
+          OR (
+            EXTRACT(
+              ISODOW FROM CURRENT_DATE
+            ) = 3
+            AND fr_trade.miercoles = true
+          )
+
+          OR (
+            EXTRACT(
+              ISODOW FROM CURRENT_DATE
+            ) = 4
+            AND fr_trade.jueves = true
+          )
+
+          OR (
+            EXTRACT(
+              ISODOW FROM CURRENT_DATE
+            ) = 5
+            AND fr_trade.viernes = true
+          )
+
+          OR (
+            EXTRACT(
+              ISODOW FROM CURRENT_DATE
+            ) = 6
+            AND fr_trade.sabado = true
+          )
+        )
+
+      ORDER BY
+        c.nombre ASC
+      `,
+      [vendedorId]
+    );
+
+    return result.rows;
+  }
+
+  /*
+  =================================
+  VENDEDOR NORMAL / REEMPLAZANTE
+  =================================
+  Calcula primero quién es el vendedor
+  efectivo de cada ruta. Si existe un
+  reemplazo vigente, manda el reemplazo.
+  Luego aplica semana y frecuencia del
+  día igual que el plan comercial.
+  =================================
+  */
+
   const result = await db.query(
     `
+    WITH rutas_efectivas AS (
+
+      SELECT
+        r.id AS ruta_id,
+
+        COALESCE(
+          reemplazo.vendedor_reemplazo_id,
+          r.vendedor_id
+        ) AS vendedor_efectivo_id
+
+      FROM rutas r
+
+      LEFT JOIN LATERAL (
+
+        SELECT
+          rr.vendedor_reemplazo_id
+
+        FROM reemplazos_ruta rr
+
+        WHERE rr.ruta_id = r.id
+          AND rr.activo = true
+          AND CURRENT_DATE
+              BETWEEN rr.fecha_desde
+                  AND rr.fecha_hasta
+
+        ORDER BY rr.created_at DESC
+
+        LIMIT 1
+
+      ) reemplazo
+        ON true
+
+      WHERE r.activo = true
+    )
+
     SELECT DISTINCT
       c.id,
       c.codigo_cliente,
@@ -227,8 +456,11 @@ async function obtenerClientesAsignados(
 
     FROM clientes c
 
-    LEFT JOIN rutas r
-      ON r.id = c.ruta_id
+    LEFT JOIN rutas_efectivas re
+      ON re.ruta_id = c.ruta_id
+
+    LEFT JOIN frecuencias fr
+      ON fr.id = c.frecuencia_id
 
     WHERE c.deleted_at IS NULL
       AND c.activo = true
@@ -239,13 +471,80 @@ async function obtenerClientesAsignados(
       AND c.longitud <> 0
 
       AND (
-  c.vendedor_id = $1
+        (
+          c.ruta_id IS NOT NULL
+          AND re.vendedor_efectivo_id = $1
+        )
 
-  OR (
-    r.vendedor_id = $1
-    AND r.activo = true
-  )
-)
+        OR (
+          c.ruta_id IS NULL
+          AND c.vendedor_id = $1
+        )
+      )
+
+      AND (
+        c.es_ejecucion = false
+
+        OR (
+          c.es_ejecucion = true
+          AND c.semana_ejecucion IS NOT NULL
+          AND c.semana_ejecucion =
+            (
+              (
+                EXTRACT(
+                  DAY FROM CURRENT_DATE
+                )::int - 1
+              ) / 7
+            ) + 1
+        )
+      )
+
+      AND (
+        (
+          EXTRACT(
+            ISODOW FROM CURRENT_DATE
+          ) = 1
+          AND fr.lunes = true
+        )
+
+        OR (
+          EXTRACT(
+            ISODOW FROM CURRENT_DATE
+          ) = 2
+          AND fr.martes = true
+        )
+
+        OR (
+          EXTRACT(
+            ISODOW FROM CURRENT_DATE
+          ) = 3
+          AND fr.miercoles = true
+        )
+
+        OR (
+          EXTRACT(
+            ISODOW FROM CURRENT_DATE
+          ) = 4
+          AND fr.jueves = true
+        )
+
+        OR (
+          EXTRACT(
+            ISODOW FROM CURRENT_DATE
+          ) = 5
+          AND fr.viernes = true
+        )
+
+        OR (
+          EXTRACT(
+            ISODOW FROM CURRENT_DATE
+          ) = 6
+          AND fr.sabado = true
+        )
+      )
+
+    ORDER BY
+      c.nombre ASC
     `,
     [vendedorId]
   );
