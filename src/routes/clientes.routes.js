@@ -1,5 +1,6 @@
 const express = require("express");
 const db = require("../config/database");
+const ExcelJS = require("exceljs");
 
 const router = express.Router();
 
@@ -2481,7 +2482,56 @@ router.get(
   "/exportar/coordenadas",
   async (req, res) => {
     try {
-      const result = await db.query(`
+      const desde = String(req.query.desde || "").trim();
+      const hasta = String(req.query.hasta || "").trim();
+      const vendedorId = String(req.query.vendedor_id || "").trim();
+      const rutaId = String(req.query.ruta_id || "").trim();
+
+      const fechaValida = valor =>
+        !valor || /^\d{4}-\d{2}-\d{2}$/.test(valor);
+
+      if (!fechaValida(desde) || !fechaValida(hasta)) {
+        return res.status(400).json({
+          error: "Las fechas deben tener formato AAAA-MM-DD"
+        });
+      }
+
+      if (desde && hasta && desde > hasta) {
+        return res.status(400).json({
+          error: "La fecha desde no puede ser posterior a la fecha hasta"
+        });
+      }
+
+      const params = [];
+      let where = "WHERE 1 = 1";
+
+      if (desde) {
+        params.push(desde);
+        where += ` AND h.created_at >= $${params.length}::date`;
+      }
+
+      if (hasta) {
+        params.push(hasta);
+        where += ` AND h.created_at < ($${params.length}::date + INTERVAL '1 day')`;
+      }
+
+      if (vendedorId) {
+        params.push(vendedorId);
+        where += `
+          AND COALESCE(r.vendedor_id, c.vendedor_id)
+              = $${params.length}::uuid
+        `;
+      }
+
+      if (rutaId) {
+        params.push(rutaId);
+        where += `
+          AND c.ruta_id = $${params.length}::uuid
+        `;
+      }
+
+      const result = await db.query(
+        `
         SELECT
           h.created_at,
           c.codigo_cliente,
@@ -2514,8 +2564,11 @@ router.get(
           ON ud.id = c.vendedor_id
         LEFT JOIN usuarios um
           ON um.id = h.vendedor_id
+        ${where}
         ORDER BY h.created_at DESC
-      `);
+        `,
+        params
+      );
 
       function distanciaMetros(lat1, lon1, lat2, lon2) {
         const aLat1 = Number(lat1);
@@ -2529,13 +2582,14 @@ router.get(
           !Number.isFinite(aLat2) ||
           !Number.isFinite(aLon2)
         ) {
-          return "";
+          return null;
         }
 
         const R = 6371000;
         const rad = Math.PI / 180;
         const dLat = (aLat2 - aLat1) * rad;
         const dLon = (aLon2 - aLon1) * rad;
+
         const a =
           Math.sin(dLat / 2) ** 2 +
           Math.cos(aLat1 * rad) *
@@ -2547,46 +2601,76 @@ router.get(
         );
       }
 
-      const columnas = [
-        "fecha_hora",
-        "codigo_cliente",
-        "cliente",
-        "direccion",
-        "localidad",
-        "ruta",
-        "vendedor_titular",
-        "latitud_anterior",
-        "longitud_anterior",
-        "latitud_nueva",
-        "longitud_nueva",
-        "distancia_metros",
-        "origen",
-        "legajo_modifico",
-        "usuario_modifico"
+      const workbook = new ExcelJS.Workbook();
+
+      workbook.creator = "SEC";
+      workbook.created = new Date();
+
+      const hoja = workbook.addWorksheet(
+        "Cambios de coordenadas",
+        {
+          views: [
+            {
+              state: "frozen",
+              ySplit: 1
+            }
+          ]
+        }
+      );
+
+      hoja.columns = [
+        { header: "Fecha / Hora", key: "fecha_hora", width: 22 },
+        { header: "Código Cliente", key: "codigo_cliente", width: 16 },
+        { header: "Cliente", key: "cliente", width: 30 },
+        { header: "Dirección", key: "direccion", width: 30 },
+        { header: "Localidad", key: "localidad", width: 22 },
+        { header: "Ruta", key: "ruta", width: 12 },
+        { header: "Vendedor Titular", key: "vendedor_titular", width: 28 },
+        { header: "Latitud Anterior", key: "latitud_anterior", width: 18 },
+        { header: "Longitud Anterior", key: "longitud_anterior", width: 18 },
+        { header: "Latitud Nueva", key: "latitud_nueva", width: 18 },
+        { header: "Longitud Nueva", key: "longitud_nueva", width: 18 },
+        { header: "Distancia (m)", key: "distancia_metros", width: 16 },
+        { header: "Origen", key: "origen", width: 18 },
+        { header: "Legajo Modificó", key: "legajo_modifico", width: 16 },
+        { header: "Usuario Modificó", key: "usuario_modifico", width: 28 }
       ];
 
-      function valorCsv(valor) {
-        if (valor === null || valor === undefined) {
-          return "";
-        }
-        return '"' + String(valor).replace(/"/g, '""') + '"';
-      }
-
-      const filas = [columnas.join(";")];
+      hoja.getRow(1).font = { bold: true };
+      hoja.autoFilter = {
+        from: "A1",
+        to: "O1"
+      };
 
       result.rows.forEach(item => {
-        const registro = {
-          fecha_hora: item.created_at,
+        hoja.addRow({
+          fecha_hora: item.created_at ? new Date(item.created_at) : null,
           codigo_cliente: item.codigo_cliente,
           cliente: item.nombre,
           direccion: item.direccion,
           localidad: item.localidad,
           ruta: item.ruta,
           vendedor_titular: item.vendedor_titular,
-          latitud_anterior: item.latitud_anterior,
-          longitud_anterior: item.longitud_anterior,
-          latitud_nueva: item.latitud_nueva,
-          longitud_nueva: item.longitud_nueva,
+          latitud_anterior:
+            item.latitud_anterior !== null &&
+            item.latitud_anterior !== undefined
+              ? Number(item.latitud_anterior)
+              : null,
+          longitud_anterior:
+            item.longitud_anterior !== null &&
+            item.longitud_anterior !== undefined
+              ? Number(item.longitud_anterior)
+              : null,
+          latitud_nueva:
+            item.latitud_nueva !== null &&
+            item.latitud_nueva !== undefined
+              ? Number(item.latitud_nueva)
+              : null,
+          longitud_nueva:
+            item.longitud_nueva !== null &&
+            item.longitud_nueva !== undefined
+              ? Number(item.longitud_nueva)
+              : null,
           distancia_metros: distanciaMetros(
             item.latitud_anterior,
             item.longitud_anterior,
@@ -2596,29 +2680,45 @@ router.get(
           origen: item.origen,
           legajo_modifico: item.legajo_modifico,
           usuario_modifico: item.usuario_modifico
-        };
-
-        filas.push(
-          columnas
-            .map(columna => valorCsv(registro[columna]))
-            .join(";")
-        );
+        });
       });
 
-      const csv = "\uFEFF" + filas.join("\r\n");
+      hoja.getColumn("A").numFmt = "dd/mm/yyyy hh:mm";
+      hoja.getColumn("H").numFmt = "0.000000";
+      hoja.getColumn("I").numFmt = "0.000000";
+      hoja.getColumn("J").numFmt = "0.000000";
+      hoja.getColumn("K").numFmt = "0.000000";
+      hoja.getColumn("L").numFmt = "0";
+
       const fecha = new Date().toISOString().slice(0, 10);
+
+      const partesNombre = ["cambios_coordenadas_SEC"];
+      if (desde) partesNombre.push("desde_" + desde);
+      if (hasta) partesNombre.push("hasta_" + hasta);
+      partesNombre.push(fecha);
+
       const nombreArchivo =
-        "cambios_coordenadas_SEC_" + fecha + ".csv";
+        partesNombre.join("_") +
+        ".xlsx";
 
       res.setHeader(
         "Content-Type",
-        "text/csv; charset=utf-8"
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
       );
+
       res.setHeader(
         "Content-Disposition",
         `attachment; filename="${nombreArchivo}"`
       );
-      res.send(csv);
+
+      res.setHeader(
+        "X-Registros-Exportados",
+        String(result.rows.length)
+      );
+
+      await workbook.xlsx.write(res);
+      res.end();
+
     } catch (error) {
       console.error(
         "ERROR EXPORTANDO CAMBIOS DE COORDENADAS:",
