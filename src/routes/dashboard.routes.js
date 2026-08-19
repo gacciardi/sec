@@ -380,12 +380,25 @@ router.get("/vendedores/:id", async (req, res) => {
 
     const vendedorResult = await db.query(
       `
-      SELECT id, nombre, apellido, legajo
+      SELECT
+        id,
+        nombre,
+        apellido,
+        legajo,
+        UPPER(TRIM(rol)) AS rol
       FROM usuarios
       WHERE id = $1
+        AND deleted_at IS NULL
+      LIMIT 1
       `,
       [id]
     );
+
+    if (vendedorResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "Vendedor no encontrado"
+      });
+    }
 
     const gpsResult = await db.query(
       `
@@ -406,6 +419,14 @@ router.get("/vendedores/:id", async (req, res) => {
       `
       WITH clientes_dia AS (
 
+        /*
+        =================================
+        1. PLAN COMERCIAL TRADICIONAL
+        =================================
+        Incluye al titular normal y también
+        al reemplazante vigente de la ruta.
+        */
+
         SELECT DISTINCT ON (c.id)
           c.id,
           c.codigo_cliente,
@@ -414,29 +435,68 @@ router.get("/vendedores/:id", async (req, res) => {
           c.localidad,
           c.latitud,
           c.longitud,
+
           ca.nombre AS canal,
           f.nombre AS frecuencia,
           r.nombre AS ruta,
-          NULL::text AS motivo,
-          1 AS prioridad_origen
+
+          c.es_ejecucion
+            AS programa_ejecucion,
+
+          c.semana_ejecucion,
+
+          CASE
+            WHEN reemplazo.vendedor_reemplazo_id IS NOT NULL
+            THEN 'REEMPLAZO DE RUTA'
+            ELSE NULL
+          END::text AS motivo,
+
+          2 AS prioridad_origen
+
         FROM clientes c
+
         LEFT JOIN canales ca
           ON ca.id = c.canal_id
+
         LEFT JOIN frecuencias f
           ON f.id = c.frecuencia_id
+
         LEFT JOIN rutas r
           ON r.id = c.ruta_id
-          AND r.activo = true
+         AND r.activo = true
+
+        LEFT JOIN LATERAL (
+          SELECT
+            rr.vendedor_reemplazo_id
+          FROM reemplazos_ruta rr
+          WHERE rr.ruta_id = r.id
+            AND rr.activo = true
+            AND CURRENT_DATE
+                BETWEEN rr.fecha_desde
+                    AND rr.fecha_hasta
+          ORDER BY rr.created_at DESC
+          LIMIT 1
+        ) reemplazo ON true
+
         WHERE c.deleted_at IS NULL
           AND c.activo = true
-          AND (
-            r.vendedor_id = $1
-            OR c.vendedor_id = $1
-          )
+
+          AND COALESCE(
+                reemplazo.vendedor_reemplazo_id,
+                r.vendedor_id,
+                c.vendedor_id
+              ) = $1
+
           AND ${DIA_SQL}
 
         UNION ALL
 
+        /*
+        =================================
+        2. CLIENTES EXTRA DEL DÍA
+        =================================
+        */
+
         SELECT DISTINCT ON (c.id)
           c.id,
           c.codigo_cliente,
@@ -445,33 +505,154 @@ router.get("/vendedores/:id", async (req, res) => {
           c.localidad,
           c.latitud,
           c.longitud,
+
           ca.nombre AS canal,
           f.nombre AS frecuencia,
           r.nombre AS ruta,
+
+          c.es_ejecucion
+            AS programa_ejecucion,
+
+          c.semana_ejecucion,
+
           e.motivo,
           0 AS prioridad_origen
+
         FROM clientes_extra_dia e
+
         JOIN clientes c
           ON c.id = e.cliente_id
+
         LEFT JOIN canales ca
           ON ca.id = c.canal_id
+
         LEFT JOIN frecuencias f
           ON f.id = c.frecuencia_id
+
         LEFT JOIN rutas r
           ON r.id = e.ruta_id
+
         WHERE e.vendedor_id = $1
           AND e.fecha = CURRENT_DATE
           AND e.activo = true
           AND c.deleted_at IS NULL
           AND c.activo = true
 
+        UNION ALL
+
+        /*
+        =================================
+        3. PLAN TRADE MARKETING
+        =================================
+        Usa la frecuencia y la ruta propias
+        del Plan Trade.
+
+        "Todas las semanas" funciona porque
+        internamente se guarda una asignación
+        para cada semana del 1 al 5.
+        */
+
+        SELECT DISTINCT ON (c.id)
+          c.id,
+          c.codigo_cliente,
+          c.nombre,
+          c.direccion,
+          c.localidad,
+          c.latitud,
+          c.longitud,
+
+          ca.nombre AS canal,
+          f.nombre AS frecuencia,
+          r_trade.nombre AS ruta,
+
+          c.es_ejecucion
+            AS programa_ejecucion,
+
+          c.semana_ejecucion,
+
+          'PLAN TRADE'::text AS motivo,
+          1 AS prioridad_origen
+
+        FROM trade_visit_plan tvp
+
+        JOIN clientes c
+          ON c.id = tvp.cliente_id
+
+        LEFT JOIN canales ca
+          ON ca.id = c.canal_id
+
+        JOIN frecuencias f
+          ON f.id = tvp.frecuencia_id
+
+        LEFT JOIN rutas r_trade
+          ON r_trade.id = tvp.ruta_trade_id
+
+        WHERE tvp.trade_id = $1
+          AND tvp.activo = true
+          AND c.deleted_at IS NULL
+          AND c.activo = true
+
+          AND tvp.semana =
+              LEAST(
+                CEIL(
+                  EXTRACT(
+                    DAY FROM CURRENT_DATE
+                  ) / 7.0
+                )::int,
+                5
+              )
+
+          AND ${DIA_SQL}
+
+          /*
+          Si el Trade hoy está cubriendo una
+          ruta comercial, no se suma además
+          su recorrido Trade.
+          */
+          AND NOT EXISTS (
+            SELECT 1
+
+            FROM reemplazos_ruta rr
+
+            JOIN rutas r2
+              ON r2.id = rr.ruta_id
+             AND r2.activo = true
+
+            WHERE
+              rr.vendedor_reemplazo_id =
+                tvp.trade_id
+
+              AND rr.activo = true
+
+              AND CURRENT_DATE
+                  BETWEEN rr.fecha_desde
+                      AND rr.fecha_hasta
+          )
+
       ),
+
+      /*
+      =================================
+      UNIFICACIÓN
+      =================================
+      Si el mismo cliente entra por más de
+      un origen, se muestra una sola vez.
+
+      Prioridad:
+      0 = Extra del día
+      1 = Trade
+      2 = Tradicional
+      */
+
       unificados AS (
         SELECT DISTINCT ON (id)
           *
         FROM clientes_dia
-        ORDER BY id, prioridad_origen
+        ORDER BY
+          id,
+          prioridad_origen
       )
+
       SELECT *
       FROM unificados
       ORDER BY nombre
@@ -491,8 +672,14 @@ router.get("/vendedores/:id", async (req, res) => {
         v.hora_llegada,
         v.hora_salida,
         v.permanencia_segundos,
-        COALESCE(v.latitud_llegada, c.latitud) AS latitud_llegada,
-        COALESCE(v.longitud_llegada, c.longitud) AS longitud_llegada
+        COALESCE(
+          v.latitud_llegada,
+          c.latitud
+        ) AS latitud_llegada,
+        COALESCE(
+          v.longitud_llegada,
+          c.longitud
+        ) AS longitud_llegada
       FROM visitas v
       LEFT JOIN clientes c
         ON c.id = v.cliente_id
@@ -509,21 +696,40 @@ router.get("/vendedores/:id", async (req, res) => {
         .map(v => String(v.cliente_id))
     );
 
-    const pendientes = clientesDiaResult.rows.filter(c =>
-      !visitadosIds.has(String(c.id))
-    );
+    const pendientes =
+      clientesDiaResult.rows.filter(
+        c =>
+          !visitadosIds.has(
+            String(c.id)
+          )
+      );
 
     res.json({
-      vendedor: vendedorResult.rows[0] || null,
-      ultimo_gps: gpsResult.rows[0] || null,
+      vendedor:
+        vendedorResult.rows[0],
+
+      ultimo_gps:
+        gpsResult.rows[0] || null,
+
       pendientes,
-      visitas: visitasResult.rows
+
+      visitas:
+        visitasResult.rows
     });
 
   } catch (error) {
+
+    console.error(
+      "ERROR DETALLE VENDEDOR:",
+      error
+    );
+
     res.status(500).json({
-      error: "Error al obtener detalle del vendedor",
-      detalle: error.message
+      error:
+        "Error al obtener detalle del vendedor",
+
+      detalle:
+        error.message
     });
   }
 });
