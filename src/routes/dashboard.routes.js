@@ -489,6 +489,36 @@ router.get("/vendedores/:id", async (req, res) => {
 
           AND ${DIA_SQL}
 
+          /*
+          =================================
+          FILTRO SEMANA DE EJECUCIÓN
+          =================================
+          Un cliente tradicional entra todos
+          los días que marque su frecuencia.
+
+          Si además es cliente de Ejecución,
+          sólo debe entrar en la semana que
+          tiene asignada, exactamente igual
+          que en Plan de Trabajo.
+          */
+          AND (
+            COALESCE(c.es_ejecucion, false) = false
+
+            OR (
+              c.es_ejecucion = true
+              AND c.semana_ejecucion IS NOT NULL
+              AND c.semana_ejecucion =
+                LEAST(
+                  CEIL(
+                    EXTRACT(
+                      DAY FROM CURRENT_DATE
+                    ) / 7.0
+                  )::int,
+                  5
+                )
+            )
+          )
+
         UNION ALL
 
         /*
