@@ -52,6 +52,39 @@ router.get("/vendedores", async (req, res) => {
           AND c.deleted_at IS NULL
           AND c.activo = true
 
+        UNION
+
+        SELECT DISTINCT
+          tvp.trade_id AS vendedor_id,
+          tvp.cliente_id
+        FROM trade_visit_plan tvp
+        JOIN frecuencias f
+          ON f.id = tvp.frecuencia_id
+        JOIN clientes c
+          ON c.id = tvp.cliente_id
+        WHERE tvp.activo = true
+          AND c.deleted_at IS NULL
+          AND c.activo = true
+          AND tvp.semana =
+              LEAST(
+                CEIL(
+                  EXTRACT(DAY FROM CURRENT_DATE) / 7.0
+                )::int,
+                5
+              )
+          AND ${DIA_SQL}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM reemplazos_ruta rr
+            JOIN rutas r2
+              ON r2.id = rr.ruta_id
+             AND r2.activo = true
+            WHERE rr.vendedor_reemplazo_id = tvp.trade_id
+              AND rr.activo = true
+              AND CURRENT_DATE
+                  BETWEEN rr.fecha_desde AND rr.fecha_hasta
+          )
+
       ),
       programados AS (
         SELECT
@@ -103,7 +136,7 @@ router.get("/vendedores", async (req, res) => {
         ORDER BY vi.hora_llegada DESC
         LIMIT 1
       ) va ON true
-      WHERE u.rol = 'VENDEDOR'
+      WHERE UPPER(TRIM(u.rol)) IN ('VENDEDOR', 'TRADE_MARKETING')
         AND u.deleted_at IS NULL
         AND u.activo = true
       ORDER BY u.apellido, u.nombre
@@ -178,6 +211,39 @@ router.get("/alertas-operativas", async (req, res) => {
           AND c.deleted_at IS NULL
           AND c.activo = true
 
+        UNION
+
+        SELECT DISTINCT
+          tvp.trade_id AS vendedor_id,
+          tvp.cliente_id
+        FROM trade_visit_plan tvp
+        JOIN frecuencias f
+          ON f.id = tvp.frecuencia_id
+        JOIN clientes c
+          ON c.id = tvp.cliente_id
+        WHERE tvp.activo = true
+          AND c.deleted_at IS NULL
+          AND c.activo = true
+          AND tvp.semana =
+              LEAST(
+                CEIL(
+                  EXTRACT(DAY FROM CURRENT_DATE) / 7.0
+                )::int,
+                5
+              )
+          AND ${DIA_SQL}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM reemplazos_ruta rr
+            JOIN rutas r2
+              ON r2.id = rr.ruta_id
+             AND r2.activo = true
+            WHERE rr.vendedor_reemplazo_id = tvp.trade_id
+              AND rr.activo = true
+              AND CURRENT_DATE
+                  BETWEEN rr.fecha_desde AND rr.fecha_hasta
+          )
+
       ),
       programados AS (
         SELECT
@@ -229,7 +295,7 @@ router.get("/alertas-operativas", async (req, res) => {
         ORDER BY vi.hora_llegada DESC
         LIMIT 1
       ) va ON true
-      WHERE u.rol = 'VENDEDOR'
+      WHERE UPPER(TRIM(u.rol)) IN ('VENDEDOR', 'TRADE_MARKETING')
         AND u.deleted_at IS NULL
         AND u.activo = true
     `);
