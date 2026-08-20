@@ -25,28 +25,89 @@ router.get("/vendedores", async (req, res) => {
     const result = await db.query(`
       WITH clientes_dia AS (
 
+        /*
+        =================================
+        1. PLAN COMERCIAL TRADICIONAL
+        =================================
+        Incluye al titular normal y, si hay
+        un reemplazo vigente de la ruta,
+        asigna esos clientes al reemplazante.
+        */
+
         SELECT DISTINCT
-          COALESCE(r.vendedor_id, c.vendedor_id) AS vendedor_id,
+          COALESCE(
+            reemplazo.vendedor_reemplazo_id,
+            r.vendedor_id,
+            c.vendedor_id
+          ) AS vendedor_id,
           c.id AS cliente_id
+
         FROM clientes c
+
         LEFT JOIN rutas r
           ON r.id = c.ruta_id
-          AND r.activo = true
+         AND r.activo = true
+
         LEFT JOIN frecuencias f
           ON f.id = c.frecuencia_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            rr.vendedor_reemplazo_id
+          FROM reemplazos_ruta rr
+          WHERE rr.ruta_id = r.id
+            AND rr.activo = true
+            AND CURRENT_DATE
+                BETWEEN rr.fecha_desde AND rr.fecha_hasta
+          ORDER BY rr.created_at DESC
+          LIMIT 1
+        ) reemplazo ON true
+
         WHERE c.deleted_at IS NULL
           AND c.activo = true
-          AND COALESCE(r.vendedor_id, c.vendedor_id) IS NOT NULL
+          AND COALESCE(
+                reemplazo.vendedor_reemplazo_id,
+                r.vendedor_id,
+                c.vendedor_id
+              ) IS NOT NULL
           AND ${DIA_SQL}
 
+          /*
+          Los clientes de Ejecución sólo cuentan
+          en la semana que tienen asignada.
+          */
+          AND (
+            COALESCE(c.es_ejecucion, false) = false
+            OR (
+              c.es_ejecucion = true
+              AND c.semana_ejecucion IS NOT NULL
+              AND c.semana_ejecucion =
+                LEAST(
+                  CEIL(
+                    EXTRACT(DAY FROM CURRENT_DATE) / 7.0
+                  )::int,
+                  5
+                )
+            )
+          )
+
         UNION
+
+        /*
+        =================================
+        2. CLIENTES EXTRA DEL DÍA
+        =================================
+        */
 
         SELECT DISTINCT
           e.vendedor_id,
           e.cliente_id
+
         FROM clientes_extra_dia e
+
         JOIN clientes c
           ON c.id = e.cliente_id
+
         WHERE e.fecha = CURRENT_DATE
           AND e.activo = true
           AND c.deleted_at IS NULL
@@ -54,14 +115,24 @@ router.get("/vendedores", async (req, res) => {
 
         UNION
 
+        /*
+        =================================
+        3. PLAN TRADE MARKETING
+        =================================
+        */
+
         SELECT DISTINCT
           tvp.trade_id AS vendedor_id,
           tvp.cliente_id
+
         FROM trade_visit_plan tvp
+
         JOIN frecuencias f
           ON f.id = tvp.frecuencia_id
+
         JOIN clientes c
           ON c.id = tvp.cliente_id
+
         WHERE tvp.activo = true
           AND c.deleted_at IS NULL
           AND c.activo = true
@@ -73,6 +144,12 @@ router.get("/vendedores", async (req, res) => {
                 5
               )
           AND ${DIA_SQL}
+
+          /*
+          Si el Trade hoy está cubriendo una
+          ruta comercial, no se suma además
+          su recorrido Trade.
+          */
           AND NOT EXISTS (
             SELECT 1
             FROM reemplazos_ruta rr
@@ -86,6 +163,7 @@ router.get("/vendedores", async (req, res) => {
           )
 
       ),
+
       programados AS (
         SELECT
           vendedor_id,
@@ -93,13 +171,22 @@ router.get("/vendedores", async (req, res) => {
         FROM clientes_dia
         GROUP BY vendedor_id
       ),
+
+      /*
+      Sólo cuentan como visitados para el avance
+      los clientes que estaban programados hoy
+      para ese mismo vendedor.
+      */
       visitados AS (
         SELECT
-          vendedor_id,
-          COUNT(DISTINCT cliente_id) AS visitados
-        FROM visitas
-        WHERE fecha = CURRENT_DATE
-        GROUP BY vendedor_id
+          vi.vendedor_id,
+          COUNT(DISTINCT vi.cliente_id) AS visitados
+        FROM visitas vi
+        INNER JOIN clientes_dia cd
+          ON cd.vendedor_id = vi.vendedor_id
+         AND cd.cliente_id = vi.cliente_id
+        WHERE vi.fecha = CURRENT_DATE
+        GROUP BY vi.vendedor_id
       )
       SELECT
         u.id AS vendedor_id,
@@ -184,28 +271,89 @@ router.get("/alertas-operativas", async (req, res) => {
     const result = await db.query(`
       WITH clientes_dia AS (
 
+        /*
+        =================================
+        1. PLAN COMERCIAL TRADICIONAL
+        =================================
+        Incluye al titular normal y, si hay
+        un reemplazo vigente de la ruta,
+        asigna esos clientes al reemplazante.
+        */
+
         SELECT DISTINCT
-          COALESCE(r.vendedor_id, c.vendedor_id) AS vendedor_id,
+          COALESCE(
+            reemplazo.vendedor_reemplazo_id,
+            r.vendedor_id,
+            c.vendedor_id
+          ) AS vendedor_id,
           c.id AS cliente_id
+
         FROM clientes c
+
         LEFT JOIN rutas r
           ON r.id = c.ruta_id
-          AND r.activo = true
+         AND r.activo = true
+
         LEFT JOIN frecuencias f
           ON f.id = c.frecuencia_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            rr.vendedor_reemplazo_id
+          FROM reemplazos_ruta rr
+          WHERE rr.ruta_id = r.id
+            AND rr.activo = true
+            AND CURRENT_DATE
+                BETWEEN rr.fecha_desde AND rr.fecha_hasta
+          ORDER BY rr.created_at DESC
+          LIMIT 1
+        ) reemplazo ON true
+
         WHERE c.deleted_at IS NULL
           AND c.activo = true
-          AND COALESCE(r.vendedor_id, c.vendedor_id) IS NOT NULL
+          AND COALESCE(
+                reemplazo.vendedor_reemplazo_id,
+                r.vendedor_id,
+                c.vendedor_id
+              ) IS NOT NULL
           AND ${DIA_SQL}
 
+          /*
+          Los clientes de Ejecución sólo cuentan
+          en la semana que tienen asignada.
+          */
+          AND (
+            COALESCE(c.es_ejecucion, false) = false
+            OR (
+              c.es_ejecucion = true
+              AND c.semana_ejecucion IS NOT NULL
+              AND c.semana_ejecucion =
+                LEAST(
+                  CEIL(
+                    EXTRACT(DAY FROM CURRENT_DATE) / 7.0
+                  )::int,
+                  5
+                )
+            )
+          )
+
         UNION
+
+        /*
+        =================================
+        2. CLIENTES EXTRA DEL DÍA
+        =================================
+        */
 
         SELECT DISTINCT
           e.vendedor_id,
           e.cliente_id
+
         FROM clientes_extra_dia e
+
         JOIN clientes c
           ON c.id = e.cliente_id
+
         WHERE e.fecha = CURRENT_DATE
           AND e.activo = true
           AND c.deleted_at IS NULL
@@ -213,14 +361,24 @@ router.get("/alertas-operativas", async (req, res) => {
 
         UNION
 
+        /*
+        =================================
+        3. PLAN TRADE MARKETING
+        =================================
+        */
+
         SELECT DISTINCT
           tvp.trade_id AS vendedor_id,
           tvp.cliente_id
+
         FROM trade_visit_plan tvp
+
         JOIN frecuencias f
           ON f.id = tvp.frecuencia_id
+
         JOIN clientes c
           ON c.id = tvp.cliente_id
+
         WHERE tvp.activo = true
           AND c.deleted_at IS NULL
           AND c.activo = true
@@ -232,6 +390,12 @@ router.get("/alertas-operativas", async (req, res) => {
                 5
               )
           AND ${DIA_SQL}
+
+          /*
+          Si el Trade hoy está cubriendo una
+          ruta comercial, no se suma además
+          su recorrido Trade.
+          */
           AND NOT EXISTS (
             SELECT 1
             FROM reemplazos_ruta rr
@@ -245,6 +409,7 @@ router.get("/alertas-operativas", async (req, res) => {
           )
 
       ),
+
       programados AS (
         SELECT
           vendedor_id,
@@ -252,13 +417,22 @@ router.get("/alertas-operativas", async (req, res) => {
         FROM clientes_dia
         GROUP BY vendedor_id
       ),
+
+      /*
+      Sólo cuentan como visitados para el avance
+      los clientes que estaban programados hoy
+      para ese mismo vendedor.
+      */
       visitados AS (
         SELECT
-          vendedor_id,
-          COUNT(DISTINCT cliente_id) AS visitados
-        FROM visitas
-        WHERE fecha = CURRENT_DATE
-        GROUP BY vendedor_id
+          vi.vendedor_id,
+          COUNT(DISTINCT vi.cliente_id) AS visitados
+        FROM visitas vi
+        INNER JOIN clientes_dia cd
+          ON cd.vendedor_id = vi.vendedor_id
+         AND cd.cliente_id = vi.cliente_id
+        WHERE vi.fecha = CURRENT_DATE
+        GROUP BY vi.vendedor_id
       )
       SELECT
         u.id AS vendedor_id,
@@ -726,6 +900,17 @@ router.get("/vendedores/:id", async (req, res) => {
         .map(v => String(v.cliente_id))
     );
 
+    const programados =
+      clientesDiaResult.rows.length;
+
+    const visitadosProgramados =
+      clientesDiaResult.rows.filter(
+        c =>
+          visitadosIds.has(
+            String(c.id)
+          )
+      ).length;
+
     const pendientes =
       clientesDiaResult.rows.filter(
         c =>
@@ -734,12 +919,29 @@ router.get("/vendedores/:id", async (req, res) => {
           )
       );
 
+    const cobertura =
+      programados > 0
+        ? Number(
+            Math.min(
+              (visitadosProgramados / programados) * 100,
+              100
+            ).toFixed(2)
+          )
+        : 0;
+
     res.json({
       vendedor:
         vendedorResult.rows[0],
 
       ultimo_gps:
         gpsResult.rows[0] || null,
+
+      resumen: {
+        programados,
+        visitados: visitadosProgramados,
+        pendientes: pendientes.length,
+        cobertura
+      },
 
       pendientes,
 
