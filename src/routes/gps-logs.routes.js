@@ -42,6 +42,112 @@ function numeroValido(valor) {
 
 /*
 =================================
+CONTROL DE VISITAS NO PROGRAMADAS
+=================================
+
+Los clientes programados para hoy mantienen
+la detección inmediata por geocerca.
+
+Los clientes asignados al vendedor pero NO
+programados para hoy deben permanecer dentro
+de su geocerca durante 2 minutos continuos
+antes de generar una visita automática.
+
+El candidato se mantiene solamente mientras
+lleguen posiciones GPS periódicas. Si hay un
+corte prolongado o el vendedor sale de la
+geocerca, el candidato se descarta.
+=================================
+*/
+
+const PERMANENCIA_NO_PROGRAMADO_MS =
+  2 * 60 * 1000;
+
+const MAX_INTERVALO_CANDIDATO_MS =
+  75 * 1000;
+
+const candidatosNoProgramados =
+  new Map();
+
+function limpiarCandidatoNoProgramado(
+  vendedorId
+) {
+  candidatosNoProgramados.delete(
+    String(vendedorId)
+  );
+}
+
+function actualizarCandidatoNoProgramado(
+  vendedorId,
+  clienteId
+) {
+  const claveVendedor =
+    String(vendedorId);
+
+  const claveCliente =
+    String(clienteId);
+
+  const ahora = Date.now();
+
+  const anterior =
+    candidatosNoProgramados.get(
+      claveVendedor
+    );
+
+  if (
+    !anterior ||
+    anterior.cliente_id !== claveCliente ||
+    ahora - anterior.ultimo_gps_ms >
+      MAX_INTERVALO_CANDIDATO_MS
+  ) {
+    const nuevo = {
+      cliente_id: claveCliente,
+      inicio_ms: ahora,
+      ultimo_gps_ms: ahora
+    };
+
+    candidatosNoProgramados.set(
+      claveVendedor,
+      nuevo
+    );
+
+    return {
+      confirmado: false,
+      transcurridos_ms: 0,
+      restantes_ms:
+        PERMANENCIA_NO_PROGRAMADO_MS
+    };
+  }
+
+  anterior.ultimo_gps_ms = ahora;
+
+  const transcurridos =
+    ahora - anterior.inicio_ms;
+
+  candidatosNoProgramados.set(
+    claveVendedor,
+    anterior
+  );
+
+  return {
+    confirmado:
+      transcurridos >=
+      PERMANENCIA_NO_PROGRAMADO_MS,
+
+    transcurridos_ms:
+      transcurridos,
+
+    restantes_ms:
+      Math.max(
+        0,
+        PERMANENCIA_NO_PROGRAMADO_MS -
+          transcurridos
+      )
+  };
+}
+
+/*
+=================================
 OBTENER O CREAR SESIÓN ACTIVA
 
 Normalmente la sesión se crea desde
@@ -554,6 +660,198 @@ async function obtenerClientesAsignados(
 
 /*
 =================================
+TODOS LOS CLIENTES ASIGNADOS
+
+Se usa únicamente para detectar posibles
+visitas NO programadas. No reemplaza el plan
+diario ni modifica sus contadores.
+=================================
+*/
+
+async function obtenerTodosClientesAsignados(
+  vendedorId
+) {
+  const usuarioResult = await db.query(
+    `
+    SELECT id, rol
+    FROM usuarios
+    WHERE id = $1
+      AND activo = true
+    LIMIT 1
+    `,
+    [vendedorId]
+  );
+
+  if (usuarioResult.rows.length === 0) {
+    return [];
+  }
+
+  const rolUsuario =
+    String(
+      usuarioResult.rows[0].rol || ""
+    ).trim().toUpperCase();
+
+  let tieneReemplazoComercial = false;
+
+  if (rolUsuario === "TRADE_MARKETING") {
+    const reemplazoResult = await db.query(
+      `
+      SELECT rr.id
+      FROM reemplazos_ruta rr
+      INNER JOIN rutas r
+        ON r.id = rr.ruta_id
+      WHERE rr.vendedor_reemplazo_id = $1
+        AND rr.activo = true
+        AND r.activo = true
+        AND CURRENT_DATE
+            BETWEEN rr.fecha_desde
+                AND rr.fecha_hasta
+      LIMIT 1
+      `,
+      [vendedorId]
+    );
+
+    tieneReemplazoComercial =
+      reemplazoResult.rows.length > 0;
+  }
+
+  if (
+    rolUsuario === "TRADE_MARKETING" &&
+    !tieneReemplazoComercial
+  ) {
+    const result = await db.query(
+      `
+      SELECT DISTINCT
+        c.id,
+        c.codigo_cliente,
+        c.nombre,
+        c.direccion,
+        c.localidad,
+        c.latitud,
+        c.longitud,
+
+        COALESCE(
+          c.radio_geocerca,
+          30
+        ) AS radio_geocerca
+
+      FROM trade_visit_plan tvp
+
+      INNER JOIN clientes c
+        ON c.id = tvp.cliente_id
+
+      LEFT JOIN rutas r_trade
+        ON r_trade.id = tvp.ruta_trade_id
+
+      WHERE tvp.trade_id = $1
+        AND tvp.activo = true
+        AND c.deleted_at IS NULL
+        AND c.activo = true
+        AND c.latitud IS NOT NULL
+        AND c.longitud IS NOT NULL
+        AND c.latitud <> 0
+        AND c.longitud <> 0
+
+        AND (
+          r_trade.id IS NULL
+          OR r_trade.activo = true
+        )
+
+      ORDER BY
+        c.nombre ASC
+      `,
+      [vendedorId]
+    );
+
+    return result.rows;
+  }
+
+  const result = await db.query(
+    `
+    WITH rutas_efectivas AS (
+
+      SELECT
+        r.id AS ruta_id,
+
+        COALESCE(
+          reemplazo.vendedor_reemplazo_id,
+          r.vendedor_id
+        ) AS vendedor_efectivo_id
+
+      FROM rutas r
+
+      LEFT JOIN LATERAL (
+
+        SELECT
+          rr.vendedor_reemplazo_id
+
+        FROM reemplazos_ruta rr
+
+        WHERE rr.ruta_id = r.id
+          AND rr.activo = true
+          AND CURRENT_DATE
+              BETWEEN rr.fecha_desde
+                  AND rr.fecha_hasta
+
+        ORDER BY rr.created_at DESC
+
+        LIMIT 1
+
+      ) reemplazo
+        ON true
+
+      WHERE r.activo = true
+    )
+
+    SELECT DISTINCT
+      c.id,
+      c.codigo_cliente,
+      c.nombre,
+      c.direccion,
+      c.localidad,
+      c.latitud,
+      c.longitud,
+
+      COALESCE(
+        c.radio_geocerca,
+        30
+      ) AS radio_geocerca
+
+    FROM clientes c
+
+    LEFT JOIN rutas_efectivas re
+      ON re.ruta_id = c.ruta_id
+
+    WHERE c.deleted_at IS NULL
+      AND c.activo = true
+      AND c.latitud IS NOT NULL
+      AND c.longitud IS NOT NULL
+      AND c.latitud <> 0
+      AND c.longitud <> 0
+
+      AND (
+        (
+          c.ruta_id IS NOT NULL
+          AND re.vendedor_efectivo_id = $1
+        )
+
+        OR (
+          c.ruta_id IS NULL
+          AND c.vendedor_id = $1
+        )
+      )
+
+    ORDER BY
+      c.nombre ASC
+    `,
+    [vendedorId]
+  );
+
+  return result.rows;
+}
+
+/*
+=================================
 CLIENTES DENTRO DE GEOCERCA
 =================================
 */
@@ -808,6 +1106,160 @@ async function abrirVisita(
   );
 
   return result.rows[0];
+}
+
+/*
+=================================
+EVALUAR NUEVA LLEGADA AUTOMÁTICA
+
+Prioridad:
+1) Clientes programados: inmediata.
+2) Clientes no programados: 2 minutos
+   continuos dentro de geocerca.
+=================================
+*/
+
+async function evaluarNuevaLlegadaAutomatica(
+  vendedorId,
+  latActual,
+  lngActual,
+  excluirClienteId = null
+) {
+  const [
+    clientesProgramados,
+    todosLosClientes
+  ] = await Promise.all([
+    obtenerClientesAsignados(
+      vendedorId
+    ),
+    obtenerTodosClientesAsignados(
+      vendedorId
+    )
+  ]);
+
+  const excluir =
+    excluirClienteId === null ||
+    excluirClienteId === undefined
+      ? null
+      : String(excluirClienteId);
+
+  const candidatosProgramados =
+    obtenerCandidatos(
+      clientesProgramados,
+      latActual,
+      lngActual
+    ).filter(
+      cliente =>
+        excluir === null ||
+        String(cliente.id) !== excluir
+    );
+
+  if (candidatosProgramados.length > 0) {
+    limpiarCandidatoNoProgramado(
+      vendedorId
+    );
+  }
+
+  if (candidatosProgramados.length > 1) {
+    return {
+      tipo: "MULTIPLES_PROGRAMADOS",
+      candidatos:
+        candidatosProgramados
+    };
+  }
+
+  if (candidatosProgramados.length === 1) {
+    return {
+      tipo: "PROGRAMADO",
+      cliente:
+        candidatosProgramados[0]
+    };
+  }
+
+  const idsProgramados = new Set(
+    clientesProgramados.map(
+      cliente => String(cliente.id)
+    )
+  );
+
+  const candidatosNoProgramados =
+    obtenerCandidatos(
+      todosLosClientes,
+      latActual,
+      lngActual
+    ).filter(
+      cliente =>
+        !idsProgramados.has(
+          String(cliente.id)
+        ) &&
+        (
+          excluir === null ||
+          String(cliente.id) !== excluir
+        )
+    );
+
+  if (candidatosNoProgramados.length === 0) {
+    limpiarCandidatoNoProgramado(
+      vendedorId
+    );
+
+    return {
+      tipo: "FUERA"
+    };
+  }
+
+  /*
+  Si hay más de un cliente NO programado en
+  la misma zona, no elegimos automáticamente
+  ninguno. Es preferible no registrar antes
+  que generar una visita falsa.
+  */
+  if (candidatosNoProgramados.length > 1) {
+    limpiarCandidatoNoProgramado(
+      vendedorId
+    );
+
+    return {
+      tipo: "MULTIPLES_NO_PROGRAMADOS",
+      candidatos:
+        candidatosNoProgramados
+    };
+  }
+
+  const cliente =
+    candidatosNoProgramados[0];
+
+  const estadoCandidato =
+    actualizarCandidatoNoProgramado(
+      vendedorId,
+      cliente.id
+    );
+
+  if (!estadoCandidato.confirmado) {
+    return {
+      tipo: "ESPERA_NO_PROGRAMADO",
+      cliente,
+      segundos_transcurridos:
+        Math.floor(
+          estadoCandidato.transcurridos_ms /
+          1000
+        ),
+      segundos_restantes:
+        Math.ceil(
+          estadoCandidato.restantes_ms /
+          1000
+        )
+    };
+  }
+
+  limpiarCandidatoNoProgramado(
+    vendedorId
+  );
+
+  return {
+    tipo: "NO_PROGRAMADO_CONFIRMADO",
+    cliente
+  };
 }
 
 /*
@@ -1240,9 +1692,14 @@ router.post(
         velocidad
       } = req.body;
 
-      const latActual = numeroValido(latitud);
-      const lngActual = numeroValido(longitud);
-      const velocidadActual = numeroValido(velocidad) || 0;
+      const latActual =
+        numeroValido(latitud);
+
+      const lngActual =
+        numeroValido(longitud);
+
+      const velocidadActual =
+        numeroValido(velocidad) || 0;
 
       if (
         !vendedor_id ||
@@ -1292,7 +1749,9 @@ router.post(
       );
 
       const visitaAbierta =
-        await obtenerVisitaAbierta(vendedor_id);
+        await obtenerVisitaAbierta(
+          vendedor_id
+        );
 
       /*
       ===============================
@@ -1301,17 +1760,33 @@ router.post(
       */
 
       if (visitaAbierta) {
+        /*
+        Mientras hay una visita real abierta,
+        no mantenemos candidatos pendientes de
+        clientes no programados.
+        */
+        limpiarCandidatoNoProgramado(
+          vendedor_id
+        );
+
         const latCliente =
-          numeroValido(visitaAbierta.latitud);
+          numeroValido(
+            visitaAbierta.latitud
+          );
 
         const lngCliente =
-          numeroValido(visitaAbierta.longitud);
+          numeroValido(
+            visitaAbierta.longitud
+          );
 
         const radioGeocerca =
-          numeroValido(visitaAbierta.radio_geocerca) || 30;
+          numeroValido(
+            visitaAbierta.radio_geocerca
+          ) || 30;
 
         const distanciaCliente =
-          latCliente !== null && lngCliente !== null
+          latCliente !== null &&
+          lngCliente !== null
             ? distanciaMetros(
                 latActual,
                 lngActual,
@@ -1320,18 +1795,30 @@ router.post(
               )
             : Number.POSITIVE_INFINITY;
 
-        if (distanciaCliente <= radioGeocerca) {
-          await marcarPrimerCliente(vendedor_id);
+        if (
+          distanciaCliente <=
+          radioGeocerca
+        ) {
+          await marcarPrimerCliente(
+            vendedor_id
+          );
 
           return res.json({
             mensaje:
               "GPS recibido. Vendedor sigue dentro del cliente.",
             estado: "DENTRO",
-            cliente: visitaAbierta.cliente,
-            cliente_id: visitaAbierta.cliente_id,
-            distancia_metros: Math.round(distanciaCliente),
-            radio_geocerca: radioGeocerca,
-            visita_id: visitaAbierta.id
+            cliente:
+              visitaAbierta.cliente,
+            cliente_id:
+              visitaAbierta.cliente_id,
+            distancia_metros:
+              Math.round(
+                distanciaCliente
+              ),
+            radio_geocerca:
+              radioGeocerca,
+            visita_id:
+              visitaAbierta.id
           });
         }
 
@@ -1343,26 +1830,39 @@ router.post(
           );
 
         /*
-        Tras cerrar la visita, se comprueba en el mismo
-        GPS si el vendedor ya entró en otro cliente.
+        Tras cerrar la visita, comprobamos en
+        el mismo GPS si ya entró en otro cliente.
         */
-
-        const clientes =
-          await obtenerClientesAsignados(vendedor_id);
-
-        const candidatos =
-          obtenerCandidatos(
-            clientes,
+        const evaluacion =
+          await evaluarNuevaLlegadaAutomatica(
+            vendedor_id,
             latActual,
-            lngActual
-          ).filter(
-            cliente =>
-              String(cliente.id) !==
-              String(visitaAbierta.cliente_id)
+            lngActual,
+            visitaAbierta.cliente_id
           );
 
-        if (candidatos.length === 1) {
-          const clienteDentro = candidatos[0];
+        if (
+          evaluacion.tipo ===
+          "MULTIPLES_PROGRAMADOS"
+        ) {
+          return res.json({
+            mensaje:
+              "Salida registrada. Hay varios clientes programados cercanos.",
+            estado:
+              "MULTIPLES_CLIENTES",
+            clientes:
+              evaluacion.candidatos,
+            visita_anterior:
+              visitaCerrada
+          });
+        }
+
+        if (
+          evaluacion.tipo ===
+          "PROGRAMADO"
+        ) {
+          const clienteDentro =
+            evaluacion.cliente;
 
           const nuevaVisita =
             await abrirVisita(
@@ -1374,27 +1874,107 @@ router.post(
 
           return res.json({
             mensaje:
-              "Salida registrada y nueva llegada detectada.",
+              "Salida registrada y nueva llegada programada detectada.",
             estado: "DENTRO",
-            cliente: clienteDentro.nombre,
-            cliente_id: clienteDentro.id,
+            programado: true,
+            cliente:
+              clienteDentro.nombre,
+            cliente_id:
+              clienteDentro.id,
             distancia_metros:
               clienteDentro.distancia_metros,
             radio_geocerca:
               clienteDentro.radio_geocerca,
-            visita_id: nuevaVisita.id,
-            visita: nuevaVisita,
-            visita_anterior: visitaCerrada
+            visita_id:
+              nuevaVisita.id,
+            visita:
+              nuevaVisita,
+            visita_anterior:
+              visitaCerrada
           });
         }
 
-        if (candidatos.length > 1) {
+        if (
+          evaluacion.tipo ===
+          "ESPERA_NO_PROGRAMADO"
+        ) {
           return res.json({
             mensaje:
-              "Salida registrada. Hay varios clientes cercanos.",
-            estado: "MULTIPLES_CLIENTES",
-            clientes: candidatos,
-            visita_anterior: visitaCerrada
+              "Salida registrada. Cliente no programado detectado; esperando permanencia mínima.",
+            estado:
+              "ESPERA_NO_PROGRAMADO",
+            programado: false,
+            cliente:
+              evaluacion.cliente.nombre,
+            cliente_id:
+              evaluacion.cliente.id,
+            distancia_metros:
+              evaluacion.cliente
+                .distancia_metros,
+            radio_geocerca:
+              evaluacion.cliente
+                .radio_geocerca,
+            segundos_transcurridos:
+              evaluacion
+                .segundos_transcurridos,
+            segundos_restantes:
+              evaluacion
+                .segundos_restantes,
+            visita_anterior:
+              visitaCerrada
+          });
+        }
+
+        if (
+          evaluacion.tipo ===
+          "NO_PROGRAMADO_CONFIRMADO"
+        ) {
+          const clienteDentro =
+            evaluacion.cliente;
+
+          const nuevaVisita =
+            await abrirVisita(
+              vendedor_id,
+              clienteDentro.id,
+              latActual,
+              lngActual
+            );
+
+          return res.json({
+            mensaje:
+              "Salida registrada y visita no programada confirmada por permanencia.",
+            estado: "DENTRO",
+            programado: false,
+            cliente:
+              clienteDentro.nombre,
+            cliente_id:
+              clienteDentro.id,
+            distancia_metros:
+              clienteDentro.distancia_metros,
+            radio_geocerca:
+              clienteDentro.radio_geocerca,
+            visita_id:
+              nuevaVisita.id,
+            visita:
+              nuevaVisita,
+            visita_anterior:
+              visitaCerrada
+          });
+        }
+
+        if (
+          evaluacion.tipo ===
+          "MULTIPLES_NO_PROGRAMADOS"
+        ) {
+          return res.json({
+            mensaje:
+              "Salida registrada. Hay varios clientes no programados cercanos; no se registra visita automática.",
+            estado:
+              "CANDIDATOS_NO_PROGRAMADOS",
+            clientes:
+              evaluacion.candidatos,
+            visita_anterior:
+              visitaCerrada
           });
         }
 
@@ -1402,7 +1982,8 @@ router.post(
           mensaje:
             "GPS recibido. Salida automática registrada.",
           estado: "FUERA",
-          visita: visitaCerrada,
+          visita:
+            visitaCerrada,
           clientes_cercanos: []
         });
       }
@@ -1413,27 +1994,33 @@ router.post(
       ===============================
       */
 
-      const clientes =
-        await obtenerClientesAsignados(vendedor_id);
-
-      const candidatos =
-        obtenerCandidatos(
-          clientes,
+      const evaluacion =
+        await evaluarNuevaLlegadaAutomatica(
+          vendedor_id,
           latActual,
           lngActual
         );
 
-      if (candidatos.length > 1) {
+      if (
+        evaluacion.tipo ===
+        "MULTIPLES_PROGRAMADOS"
+      ) {
         return res.json({
           mensaje:
-            "Hay varios clientes dentro de la geocerca.",
-          estado: "MULTIPLES_CLIENTES",
-          clientes: candidatos
+            "Hay varios clientes programados dentro de la geocerca.",
+          estado:
+            "MULTIPLES_CLIENTES",
+          clientes:
+            evaluacion.candidatos
         });
       }
 
-      if (candidatos.length === 1) {
-        const clienteDentro = candidatos[0];
+      if (
+        evaluacion.tipo ===
+        "PROGRAMADO"
+      ) {
+        const clienteDentro =
+          evaluacion.cliente;
 
         const visita =
           await abrirVisita(
@@ -1445,20 +2032,101 @@ router.post(
 
         return res.json({
           mensaje:
-            "GPS recibido. Llegada automática registrada.",
+            "GPS recibido. Llegada automática programada registrada.",
           estado: "DENTRO",
-          cliente: clienteDentro.nombre,
-          cliente_id: clienteDentro.id,
+          programado: true,
+          cliente:
+            clienteDentro.nombre,
+          cliente_id:
+            clienteDentro.id,
           distancia_metros:
             clienteDentro.distancia_metros,
           radio_geocerca:
             clienteDentro.radio_geocerca,
-          visita_id: visita.id,
+          visita_id:
+            visita.id,
           visita
         });
       }
 
-      res.json({
+      if (
+        evaluacion.tipo ===
+        "ESPERA_NO_PROGRAMADO"
+      ) {
+        return res.json({
+          mensaje:
+            "Cliente no programado detectado. Todavía no se registra visita.",
+          estado:
+            "ESPERA_NO_PROGRAMADO",
+          programado: false,
+          cliente:
+            evaluacion.cliente.nombre,
+          cliente_id:
+            evaluacion.cliente.id,
+          distancia_metros:
+            evaluacion.cliente
+              .distancia_metros,
+          radio_geocerca:
+            evaluacion.cliente
+              .radio_geocerca,
+          segundos_transcurridos:
+            evaluacion
+              .segundos_transcurridos,
+          segundos_restantes:
+            evaluacion
+              .segundos_restantes
+        });
+      }
+
+      if (
+        evaluacion.tipo ===
+        "NO_PROGRAMADO_CONFIRMADO"
+      ) {
+        const clienteDentro =
+          evaluacion.cliente;
+
+        const visita =
+          await abrirVisita(
+            vendedor_id,
+            clienteDentro.id,
+            latActual,
+            lngActual
+          );
+
+        return res.json({
+          mensaje:
+            "GPS recibido. Visita no programada confirmada por 2 minutos de permanencia.",
+          estado: "DENTRO",
+          programado: false,
+          cliente:
+            clienteDentro.nombre,
+          cliente_id:
+            clienteDentro.id,
+          distancia_metros:
+            clienteDentro.distancia_metros,
+          radio_geocerca:
+            clienteDentro.radio_geocerca,
+          visita_id:
+            visita.id,
+          visita
+        });
+      }
+
+      if (
+        evaluacion.tipo ===
+        "MULTIPLES_NO_PROGRAMADOS"
+      ) {
+        return res.json({
+          mensaje:
+            "Hay varios clientes no programados cercanos. No se registra visita automática.",
+          estado:
+            "CANDIDATOS_NO_PROGRAMADOS",
+          clientes:
+            evaluacion.candidatos
+        });
+      }
+
+      return res.json({
         mensaje:
           "GPS recibido. Fuera de clientes.",
         estado: "FUERA"
