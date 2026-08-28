@@ -42,16 +42,14 @@ function numeroValido(valor) {
 
 /*
 =================================
-CONTROL DE VISITAS NO PROGRAMADAS
+CONTROL DE PERMANENCIA EN GEOCERCA
 =================================
 
-Los clientes programados para hoy mantienen
-la detección inmediata por geocerca.
-
-Los clientes asignados al vendedor pero NO
-programados para hoy deben permanecer dentro
-de su geocerca durante 2 minutos continuos
-antes de generar una visita automática.
+Tanto los clientes programados para hoy como
+los clientes asignados pero NO programados
+deben permanecer dentro de su geocerca durante
+2 minutos continuos antes de generar una visita
+automática. Esto evita registrar simples pasadas.
 
 El candidato se mantiene solamente mientras
 lleguen posiciones GPS periódicas. Si hay un
@@ -60,7 +58,7 @@ geocerca, el candidato se descarta.
 =================================
 */
 
-const PERMANENCIA_NO_PROGRAMADO_MS =
+const PERMANENCIA_AUTOMATICA_MS =
   2 * 60 * 1000;
 
 const MAX_INTERVALO_CANDIDATO_MS =
@@ -115,7 +113,7 @@ function actualizarCandidatoNoProgramado(
       confirmado: false,
       transcurridos_ms: 0,
       restantes_ms:
-        PERMANENCIA_NO_PROGRAMADO_MS
+        PERMANENCIA_AUTOMATICA_MS
     };
   }
 
@@ -132,7 +130,7 @@ function actualizarCandidatoNoProgramado(
   return {
     confirmado:
       transcurridos >=
-      PERMANENCIA_NO_PROGRAMADO_MS,
+      PERMANENCIA_AUTOMATICA_MS,
 
     transcurridos_ms:
       transcurridos,
@@ -140,7 +138,7 @@ function actualizarCandidatoNoProgramado(
     restantes_ms:
       Math.max(
         0,
-        PERMANENCIA_NO_PROGRAMADO_MS -
+        PERMANENCIA_AUTOMATICA_MS -
           transcurridos
       )
   };
@@ -1112,10 +1110,10 @@ async function abrirVisita(
 =================================
 EVALUAR NUEVA LLEGADA AUTOMÁTICA
 
-Prioridad:
-1) Clientes programados: inmediata.
-2) Clientes no programados: 2 minutos
-   continuos dentro de geocerca.
+Regla:
+1) Clientes programados: 2 minutos continuos.
+2) Clientes no programados: 2 minutos continuos
+   dentro de geocerca.
 =================================
 */
 
@@ -1169,10 +1167,39 @@ async function evaluarNuevaLlegadaAutomatica(
   }
 
   if (candidatosProgramados.length === 1) {
+    const cliente =
+      candidatosProgramados[0];
+
+    const estadoCandidato =
+      actualizarCandidatoNoProgramado(
+        vendedorId,
+        cliente.id
+      );
+
+    if (!estadoCandidato.confirmado) {
+      return {
+        tipo: "ESPERA_PROGRAMADO",
+        cliente,
+        segundos_transcurridos:
+          Math.floor(
+            estadoCandidato.transcurridos_ms /
+            1000
+          ),
+        segundos_restantes:
+          Math.ceil(
+            estadoCandidato.restantes_ms /
+            1000
+          )
+      };
+    }
+
+    limpiarCandidatoNoProgramado(
+      vendedorId
+    );
+
     return {
       tipo: "PROGRAMADO",
-      cliente:
-        candidatosProgramados[0]
+      cliente
     };
   }
 
@@ -1859,6 +1886,33 @@ router.post(
 
         if (
           evaluacion.tipo ===
+          "ESPERA_PROGRAMADO"
+        ) {
+          return res.json({
+            mensaje:
+              "Salida registrada. Cliente programado detectado; esperando permanencia mínima.",
+            estado:
+              "ESPERA_PROGRAMADO",
+            programado: true,
+            cliente:
+              evaluacion.cliente.nombre,
+            cliente_id:
+              evaluacion.cliente.id,
+            distancia_metros:
+              evaluacion.cliente.distancia_metros,
+            radio_geocerca:
+              evaluacion.cliente.radio_geocerca,
+            segundos_transcurridos:
+              evaluacion.segundos_transcurridos,
+            segundos_restantes:
+              evaluacion.segundos_restantes,
+            visita_anterior:
+              visitaCerrada
+          });
+        }
+
+        if (
+          evaluacion.tipo ===
           "PROGRAMADO"
         ) {
           const clienteDentro =
@@ -2017,6 +2071,31 @@ router.post(
 
       if (
         evaluacion.tipo ===
+        "ESPERA_PROGRAMADO"
+      ) {
+        return res.json({
+          mensaje:
+            "Cliente programado detectado. Todavía no se registra visita.",
+          estado:
+            "ESPERA_PROGRAMADO",
+          programado: true,
+          cliente:
+            evaluacion.cliente.nombre,
+          cliente_id:
+            evaluacion.cliente.id,
+          distancia_metros:
+            evaluacion.cliente.distancia_metros,
+          radio_geocerca:
+            evaluacion.cliente.radio_geocerca,
+          segundos_transcurridos:
+            evaluacion.segundos_transcurridos,
+          segundos_restantes:
+            evaluacion.segundos_restantes
+        });
+      }
+
+      if (
+        evaluacion.tipo ===
         "PROGRAMADO"
       ) {
         const clienteDentro =
@@ -2032,7 +2111,7 @@ router.post(
 
         return res.json({
           mensaje:
-            "GPS recibido. Llegada automática programada registrada.",
+            "GPS recibido. Visita programada confirmada por 2 minutos de permanencia.",
           estado: "DENTRO",
           programado: true,
           cliente:
@@ -2146,4 +2225,4 @@ router.post(
   }
 );
 
-module.exports = router;
+module.exports = router

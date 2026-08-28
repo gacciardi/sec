@@ -712,13 +712,16 @@ router.get(
                 v.cliente_id,
                 MIN(v.hora_llegada) AS hora_llegada,
                 MAX(v.hora_salida) AS hora_salida,
+                SUM(
                 CASE
-                  WHEN BOOL_OR(v.hora_salida IS NULL)
+                  WHEN v.hora_llegada IS NULL
+                  THEN 0
+                  WHEN v.hora_salida IS NULL
                   THEN GREATEST(
                     0,
                     EXTRACT(
                       EPOCH FROM (
-                        NOW() - MIN(v.hora_llegada)
+                        NOW() - v.hora_llegada
                       )
                     )::int
                   )
@@ -726,11 +729,12 @@ router.get(
                     0,
                     EXTRACT(
                       EPOCH FROM (
-                        MAX(v.hora_salida) - MIN(v.hora_llegada)
+                        v.hora_salida - v.hora_llegada
                       )
                     )::int
                   )
-                END AS permanencia_segundos,
+                END
+              )::int AS permanencia_segundos,
                 COUNT(*)::int AS cantidad_visitas,
                 STRING_AGG(
                   DISTINCT TRIM(
@@ -1082,26 +1086,29 @@ router.get(
               )
                 AS hora_salida,
 
-              CASE
-                WHEN BOOL_OR(v.hora_salida IS NULL)
-                THEN GREATEST(
-                  0,
-                  EXTRACT(
-                    EPOCH FROM (
-                      NOW() - MIN(v.hora_llegada)
-                    )
-                  )::int
-                )
-                ELSE GREATEST(
-                  0,
-                  EXTRACT(
-                    EPOCH FROM (
-                      MAX(v.hora_salida) - MIN(v.hora_llegada)
-                    )
-                  )::int
-                )
-              END
-                AS permanencia_segundos,
+              SUM(
+                CASE
+                  WHEN v.hora_llegada IS NULL
+                  THEN 0
+                  WHEN v.hora_salida IS NULL
+                  THEN GREATEST(
+                    0,
+                    EXTRACT(
+                      EPOCH FROM (
+                        NOW() - v.hora_llegada
+                      )
+                    )::int
+                  )
+                  ELSE GREATEST(
+                    0,
+                    EXTRACT(
+                      EPOCH FROM (
+                        v.hora_salida - v.hora_llegada
+                      )
+                    )::int
+                  )
+                END
+              )::int AS permanencia_segundos,
 
               COUNT(*)::int
                 AS cantidad_visitas,
@@ -1597,17 +1604,29 @@ router.get(
             v.cliente_id,
             MIN(v.hora_llegada) AS hora_llegada,
             MAX(v.hora_salida) AS hora_salida,
-            CASE
-              WHEN BOOL_OR(v.hora_salida IS NULL)
-              THEN GREATEST(
-                0,
-                EXTRACT(EPOCH FROM (NOW() - MIN(v.hora_llegada)))::int
-              )
-              ELSE GREATEST(
-                0,
-                EXTRACT(EPOCH FROM (MAX(v.hora_salida) - MIN(v.hora_llegada)))::int
-              )
-            END AS permanencia_segundos,
+            SUM(
+                CASE
+                  WHEN v.hora_llegada IS NULL
+                  THEN 0
+                  WHEN v.hora_salida IS NULL
+                  THEN GREATEST(
+                    0,
+                    EXTRACT(
+                      EPOCH FROM (
+                        NOW() - v.hora_llegada
+                      )
+                    )::int
+                  )
+                  ELSE GREATEST(
+                    0,
+                    EXTRACT(
+                      EPOCH FROM (
+                        v.hora_salida - v.hora_llegada
+                      )
+                    )::int
+                  )
+                END
+              )::int AS permanencia_segundos,
             COUNT(*)::int AS cantidad_visitas
           FROM visitas v
           CROSS JOIN parametros p
