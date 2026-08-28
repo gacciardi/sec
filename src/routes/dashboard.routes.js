@@ -875,7 +875,29 @@ router.get("/vendedores/:id", async (req, res) => {
         c.localidad,
         v.hora_llegada,
         v.hora_salida,
-        v.permanencia_segundos,
+        CASE
+          WHEN v.hora_llegada IS NULL
+          THEN 0
+
+          WHEN v.hora_salida IS NULL
+          THEN GREATEST(
+            0,
+            EXTRACT(
+              EPOCH FROM (
+                NOW() - v.hora_llegada
+              )
+            )::INTEGER
+          )
+
+          ELSE GREATEST(
+            0,
+            EXTRACT(
+              EPOCH FROM (
+                v.hora_salida - v.hora_llegada
+              )
+            )::INTEGER
+          )
+        END AS permanencia_segundos,
         COALESCE(
           v.latitud_llegada,
           c.latitud
