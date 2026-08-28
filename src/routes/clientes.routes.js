@@ -712,12 +712,25 @@ router.get(
                 v.cliente_id,
                 MIN(v.hora_llegada) AS hora_llegada,
                 MAX(v.hora_salida) AS hora_salida,
-                SUM(
-                  COALESCE(
-                    v.permanencia_segundos,
-                    0
+                CASE
+                  WHEN BOOL_OR(v.hora_salida IS NULL)
+                  THEN GREATEST(
+                    0,
+                    EXTRACT(
+                      EPOCH FROM (
+                        NOW() - MIN(v.hora_llegada)
+                      )
+                    )::int
                   )
-                )::int AS permanencia_segundos,
+                  ELSE GREATEST(
+                    0,
+                    EXTRACT(
+                      EPOCH FROM (
+                        MAX(v.hora_salida) - MIN(v.hora_llegada)
+                      )
+                    )::int
+                  )
+                END AS permanencia_segundos,
                 COUNT(*)::int AS cantidad_visitas,
                 STRING_AGG(
                   DISTINCT TRIM(
@@ -1069,12 +1082,25 @@ router.get(
               )
                 AS hora_salida,
 
-              SUM(
-                COALESCE(
-                  v.permanencia_segundos,
-                  0
+              CASE
+                WHEN BOOL_OR(v.hora_salida IS NULL)
+                THEN GREATEST(
+                  0,
+                  EXTRACT(
+                    EPOCH FROM (
+                      NOW() - MIN(v.hora_llegada)
+                    )
+                  )::int
                 )
-              )::int
+                ELSE GREATEST(
+                  0,
+                  EXTRACT(
+                    EPOCH FROM (
+                      MAX(v.hora_salida) - MIN(v.hora_llegada)
+                    )
+                  )::int
+                )
+              END
                 AS permanencia_segundos,
 
               COUNT(*)::int
@@ -1571,7 +1597,17 @@ router.get(
             v.cliente_id,
             MIN(v.hora_llegada) AS hora_llegada,
             MAX(v.hora_salida) AS hora_salida,
-            SUM(COALESCE(v.permanencia_segundos, 0))::int AS permanencia_segundos,
+            CASE
+              WHEN BOOL_OR(v.hora_salida IS NULL)
+              THEN GREATEST(
+                0,
+                EXTRACT(EPOCH FROM (NOW() - MIN(v.hora_llegada)))::int
+              )
+              ELSE GREATEST(
+                0,
+                EXTRACT(EPOCH FROM (MAX(v.hora_salida) - MIN(v.hora_llegada)))::int
+              )
+            END AS permanencia_segundos,
             COUNT(*)::int AS cantidad_visitas
           FROM visitas v
           CROSS JOIN parametros p
