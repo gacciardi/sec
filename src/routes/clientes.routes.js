@@ -736,6 +736,18 @@ router.get(
                 END
               )::int AS permanencia_segundos,
                 COUNT(*)::int AS cantidad_visitas,
+                JSON_AGG(
+                  JSON_BUILD_OBJECT(
+                    'hora_llegada', v.hora_llegada,
+                    'hora_salida', v.hora_salida,
+                    'permanencia_segundos',
+                      CASE
+                        WHEN v.hora_llegada IS NULL THEN 0
+                        WHEN v.hora_salida IS NULL THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - v.hora_llegada))::int)
+                        ELSE GREATEST(0, EXTRACT(EPOCH FROM (v.hora_salida - v.hora_llegada))::int)
+                      END
+                  ) ORDER BY v.hora_llegada
+                ) AS detalle_visitas,
                 STRING_AGG(
                   DISTINCT TRIM(
                     COALESCE(uv.nombre, '') ||
@@ -810,6 +822,8 @@ router.get(
                 vt.cantidad_visitas,
                 0
               )::int AS cantidad_visitas,
+
+              COALESCE(vt.detalle_visitas, '[]'::json) AS detalle_visitas,
 
               vt.vendedores_visita,
 
@@ -1113,6 +1127,19 @@ router.get(
               COUNT(*)::int
                 AS cantidad_visitas,
 
+              JSON_AGG(
+                JSON_BUILD_OBJECT(
+                  'hora_llegada', v.hora_llegada,
+                  'hora_salida', v.hora_salida,
+                  'permanencia_segundos',
+                    CASE
+                      WHEN v.hora_llegada IS NULL THEN 0
+                      WHEN v.hora_salida IS NULL THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - v.hora_llegada))::int)
+                      ELSE GREATEST(0, EXTRACT(EPOCH FROM (v.hora_salida - v.hora_llegada))::int)
+                    END
+                ) ORDER BY v.hora_llegada
+              ) AS detalle_visitas,
+
               STRING_AGG(
 
                 DISTINCT
@@ -1280,6 +1307,8 @@ router.get(
               0
             )::int
               AS cantidad_visitas,
+
+            COALESCE(visitas_dia.detalle_visitas, '[]'::json) AS detalle_visitas,
 
             visitas_dia.vendedores_visita,
 
