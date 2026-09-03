@@ -290,18 +290,68 @@ async function buscarCanal(valor) {
     return null;
   }
 
-  const result = await db.query(
+  /*
+  Primero intentamos coincidencia exacta ignorando
+  mayúsculas/minúsculas y espacios exteriores.
+  */
+  const exacto = await db.query(
     `
-    SELECT id
+    SELECT id, nombre
     FROM canales
-    WHERE UPPER(TRIM(nombre)) =
+    WHERE deleted_at IS NULL
+      AND UPPER(TRIM(nombre)) =
           UPPER(TRIM($1))
     LIMIT 1
     `,
     [nombre]
   );
 
-  return result.rows[0]?.id || null;
+  if (exacto.rows.length > 0) {
+    return exacto.rows[0].id;
+  }
+
+  /*
+  Si el nombre del Excel no coincide exactamente,
+  hacemos una segunda búsqueda normalizada.
+
+  Esto permite resolver diferencias habituales como:
+  - mayúsculas/minúsculas
+  - tildes
+  - puntos, comas o paréntesis
+  - espacios dobles
+  */
+  const canalesResult = await db.query(
+    `
+    SELECT id, nombre
+    FROM canales
+    WHERE deleted_at IS NULL
+    ORDER BY nombre
+    `
+  );
+
+  const canalBuscado =
+    normalizarTextoComparacion(nombre);
+
+  if (!canalBuscado) {
+    return null;
+  }
+
+  const coincidencias =
+    canalesResult.rows.filter(
+      canal =>
+        normalizarTextoComparacion(
+          canal.nombre
+        ) === canalBuscado
+    );
+
+  /*
+  Solo asignamos automáticamente cuando existe
+  una única coincidencia. Si hubiera más de una,
+  preferimos no adivinar.
+  */
+  return coincidencias.length === 1
+    ? coincidencias[0].id
+    : null;
 }
 
 async function obtenerOCrearRuta(valor) {
