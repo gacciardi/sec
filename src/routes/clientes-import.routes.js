@@ -135,6 +135,44 @@ function normalizarCoordenadas(
 
   let invertidas = false;
 
+  /*
+  Algunos maestros traen coordenadas sin el punto
+  decimal. Ejemplos:
+
+  -347760188  -> -34.7760188
+  -58610785   -> -58.610785
+
+  Recuperamos esos valores antes de validar o invertir
+  latitud y longitud.
+  */
+  function recuperarDecimalCoordenada(valor) {
+    if (
+      valor === null ||
+      !Number.isFinite(valor) ||
+      valor === 0
+    ) {
+      return valor;
+    }
+
+    let corregido = valor;
+
+    while (Math.abs(corregido) > 180) {
+      corregido = corregido / 10;
+    }
+
+    return corregido;
+  }
+
+  latitud =
+    recuperarDecimalCoordenada(latitud);
+
+  longitud =
+    recuperarDecimalCoordenada(longitud);
+
+  /*
+  Conservamos la corrección de columnas invertidas
+  que ya utilizaba SEC.
+  */
   if (
     latitud !== null &&
     longitud !== null &&
@@ -149,12 +187,19 @@ function normalizarCoordenadas(
   }
 
   /*
-  Argentina:
-  latitud aprox. -55 a -21
-  longitud aprox. -73 a -53.
-  No descartamos coordenadas fuera de Argentina porque
-  SEC podría usarse en otras zonas, pero sí rechazamos
-  valores imposibles para GPS.
+  0 / 0 significa que el maestro no tiene una
+  geolocalización útil para ese cliente.
+  */
+  if (latitud === 0) {
+    latitud = null;
+  }
+
+  if (longitud === 0) {
+    longitud = null;
+  }
+
+  /*
+  Validación final de rangos GPS.
   */
   if (
     latitud !== null &&
