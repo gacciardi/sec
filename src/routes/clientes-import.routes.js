@@ -985,6 +985,41 @@ router.post(
       const auditoriaRutas =
         new Map();
 
+      /*
+      Contamos cuántas veces aparece cada cliente en el maestro.
+      Esto permite separar la ficha física del cliente de sus
+      múltiples asignaciones comerciales.
+      */
+      const cantidadFilasPorCliente =
+        new Map();
+
+      for (const filaConteo of filas) {
+        const codigoConteo =
+          normalizarCodigo(
+            valorCampo(
+              filaConteo,
+              "codigo_cliente"
+            )
+          );
+
+        if (!codigoConteo) {
+          continue;
+        }
+
+        cantidadFilasPorCliente.set(
+          codigoConteo,
+          (cantidadFilasPorCliente.get(codigoConteo) || 0) + 1
+        );
+      }
+
+      /*
+      La ficha tradicional de clientes se procesa una sola vez
+      por código durante la importación. Las demás filas del mismo
+      cliente se conservan únicamente como asignaciones comerciales.
+      */
+      const clientesMaestroProcesados =
+        new Set();
+
       for (
         let indice = 0;
         indice < filas.length;
@@ -1020,6 +1055,19 @@ router.post(
           codigosImportados.push(
             codigoCliente
           );
+
+          const cantidadFilasCliente =
+            cantidadFilasPorCliente.get(
+              codigoCliente
+            ) || 1;
+
+          const clienteRepetidoEnMaestro =
+            cantidadFilasCliente > 1;
+
+          const procesarFichaMaestra =
+            !clientesMaestroProcesados.has(
+              codigoCliente
+            );
 
           const nombre =
             limpiarTexto(
@@ -1082,6 +1130,12 @@ router.post(
             valorCampoMultiple(
               fila,
               [
+                "Modalidad de atencion",
+                "Modalidad de atención",
+                "modalidad de atencion",
+                "modalidad de atención",
+                "modalidad_de_atencion",
+                "modalidad_de_atención",
                 "modalidad",
                 "modo",
                 "tipo_modalidad",
@@ -1384,31 +1438,41 @@ router.post(
                 categoria ??
                 clienteActual.categoria,
 
+              /*
+              COMPATIBILIDAD CON SEC ACTUAL:
+              si el cliente aparece más de una vez en el maestro,
+              sus campos operativos tradicionales NO se pisan con
+              una de las múltiples asignaciones. Las asignaciones
+              completas quedan en clientes_asignaciones.
+              */
               frecuencia_id:
-                frecuenciaId ??
-                clienteActual.frecuencia_id,
+                clienteRepetidoEnMaestro
+                  ? clienteActual.frecuencia_id
+                  : (
+                      frecuenciaId ??
+                      clienteActual.frecuencia_id
+                    ),
 
               canal_id:
                 canalId ??
                 clienteActual.canal_id,
 
-              /*
-              Si el Excel trae ruta, manda el Excel.
-              Si no trae ruta, conservamos la existente.
-              */
               ruta_id:
-                rutaId ??
-                clienteActual.ruta_id,
+                clienteRepetidoEnMaestro
+                  ? clienteActual.ruta_id
+                  : (
+                      rutaId ??
+                      clienteActual.ruta_id
+                    ),
 
-              /*
-              Si el cliente tiene ruta, NO se guarda
-              vendedor directo: la ruta es la fuente
-              operativa del vendedor.
-              */
               vendedor_id:
-                rutaId
-                  ? null
-                  : vendedorDirecto,
+                clienteRepetidoEnMaestro
+                  ? clienteActual.vendedor_id
+                  : (
+                      rutaId
+                        ? null
+                        : vendedorDirecto
+                    ),
 
               radio_geocerca:
                 30,
@@ -1474,7 +1538,8 @@ router.post(
 
               clienteActual.activo !== true;
 
-            await db.query(
+            if (procesarFichaMaestra) {
+              await db.query(
               `
               UPDATE clientes
               SET
@@ -1514,10 +1579,15 @@ router.post(
               ]
             );
 
-            if (cambio) {
-              actualizados++;
-            } else {
-              sinCambios++;
+              if (cambio) {
+                actualizados++;
+              } else {
+                sinCambios++;
+              }
+
+              clientesMaestroProcesados.add(
+                codigoCliente
+              );
             }
 
           } else {
@@ -1585,6 +1655,10 @@ router.post(
             }
 
             importados++;
+
+            clientesMaestroProcesados.add(
+              codigoCliente
+            );
           }
 
           /*
@@ -1939,6 +2013,11 @@ router.post(
         rutasSinVendedorExcel,
 
         clientesAsignadosDirectamente,
+
+        clientesConMultiplesFilas:
+          [...cantidadFilasPorCliente.values()]
+            .filter(cantidad => cantidad > 1)
+            .length,
 
         asignacionesComerciales: {
           creadas:
