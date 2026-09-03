@@ -980,16 +980,21 @@ router.get(
 
           programados AS (
 
-            SELECT DISTINCT
+            SELECT DISTINCT ON (asig.cliente_id)
 
-              c.id
-                AS cliente_id
+              asig.cliente_id,
+              asig.frecuencia_id,
+              asig.ruta_id,
+              asig.modalidad
 
-            FROM clientes c
+            FROM clientes_asignaciones asig
+
+            INNER JOIN clientes c
+              ON c.id = asig.cliente_id
 
             LEFT JOIN frecuencias fr
               ON fr.id =
-                 c.frecuencia_id
+                 asig.frecuencia_id
 
             CROSS JOIN parametros p
 
@@ -999,7 +1004,9 @@ router.get(
 
               AND c.activo = true
 
-              AND c.ruta_id = $1
+              AND asig.activo = true
+
+              AND asig.ruta_id = $1
 
               AND (
                 c.es_ejecucion = false
@@ -1163,10 +1170,6 @@ router.get(
 
             FROM visitas v
 
-            INNER JOIN clientes c
-              ON c.id =
-                 v.cliente_id
-
             LEFT JOIN usuarios
               usuario_visita
 
@@ -1180,10 +1183,15 @@ router.get(
               v.fecha =
                 p.fecha_consulta
 
-              AND c.ruta_id = $1
+              AND v.vendedor_id = $3
 
-              AND c.deleted_at
-                  IS NULL
+              AND EXISTS (
+                SELECT 1
+                FROM clientes_asignaciones asig_visita
+                WHERE asig_visita.cliente_id = v.cliente_id
+                  AND asig_visita.ruta_id = $1
+                  AND asig_visita.activo = true
+              )
 
             GROUP BY
               v.cliente_id
@@ -1270,6 +1278,8 @@ router.get(
 
             r.nombre
               AS ruta,
+
+            programados.modalidad,
 
             (
               programados.cliente_id
@@ -1360,12 +1370,12 @@ router.get(
           LEFT JOIN frecuencias fr
 
             ON fr.id =
-               c.frecuencia_id
+               programados.frecuencia_id
 
           LEFT JOIN rutas r
 
             ON r.id =
-               c.ruta_id
+               programados.ruta_id
 
           WHERE
             c.deleted_at IS NULL
@@ -1388,7 +1398,8 @@ router.get(
           `,
           [
             ruta_id,
-            fechaConsulta
+            fechaConsulta,
+            ruta.vendedor_efectivo_id
           ]
         );
 
