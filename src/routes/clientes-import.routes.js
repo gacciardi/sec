@@ -123,6 +123,22 @@ function normalizarCategoria(valor) {
     : null;
 }
 
+function normalizarModalidad(valor) {
+  const modalidad = limpiarTexto(valor);
+
+  if (!modalidad) {
+    return null;
+  }
+
+  const codigo = modalidad
+    .toUpperCase()
+    .replace(/\s+/g, "");
+
+  return ["PR", "TA", "WA", "FC", "FW"].includes(codigo)
+    ? codigo
+    : null;
+}
+
 function normalizarCoordenadas(
   latitudOriginal,
   longitudOriginal
@@ -681,6 +697,85 @@ function buscarVendedor(
   };
 }
 
+async function guardarAsignacionCliente({
+  clienteId,
+  modalidad,
+  rutaId,
+  vendedorId,
+  frecuenciaId
+}) {
+  if (!clienteId || !modalidad) {
+    return {
+      creada: false,
+      existente: false
+    };
+  }
+
+  const existente = await db.query(
+    `
+    SELECT id
+    FROM clientes_asignaciones
+    WHERE cliente_id = $1
+      AND modalidad = $2
+      AND ruta_id IS NOT DISTINCT FROM $3::uuid
+      AND vendedor_id IS NOT DISTINCT FROM $4::uuid
+      AND frecuencia_id IS NOT DISTINCT FROM $5::uuid
+    LIMIT 1
+    `,
+    [
+      clienteId,
+      modalidad,
+      rutaId,
+      vendedorId,
+      frecuenciaId
+    ]
+  );
+
+  if (existente.rows.length > 0) {
+    await db.query(
+      `
+      UPDATE clientes_asignaciones
+      SET
+        activo = true,
+        updated_at = NOW()
+      WHERE id = $1
+      `,
+      [existente.rows[0].id]
+    );
+
+    return {
+      creada: false,
+      existente: true
+    };
+  }
+
+  await db.query(
+    `
+    INSERT INTO clientes_asignaciones (
+      cliente_id,
+      modalidad,
+      ruta_id,
+      vendedor_id,
+      frecuencia_id,
+      activo
+    )
+    VALUES ($1, $2, $3, $4, $5, true)
+    `,
+    [
+      clienteId,
+      modalidad,
+      rutaId,
+      vendedorId,
+      frecuenciaId
+    ]
+  );
+
+  return {
+    creada: true,
+    existente: false
+  };
+}
+
 function agregarCandidatoRuta(
   mapa,
   rutaResultado,
@@ -858,6 +953,11 @@ router.post(
 
       let clientesAsignadosDirectamente = 0;
 
+      let asignacionesCreadas = 0;
+      let asignacionesExistentes = 0;
+      let filasSinModalidad = 0;
+      let modalidadesNoReconocidas = 0;
+
       let sinCoordenadas = 0;
       let coordenadasInvertidas = 0;
 
@@ -977,6 +1077,40 @@ router.post(
                 "categoria"
               )
             );
+
+          const modalidadExcel =
+            valorCampoMultiple(
+              fila,
+              [
+                "modalidad",
+                "modo",
+                "tipo_modalidad",
+                "tipo modalidad"
+              ]
+            );
+
+          const modalidad =
+            normalizarModalidad(
+              modalidadExcel
+            );
+
+          if (!limpiarTexto(modalidadExcel)) {
+            filasSinModalidad++;
+          } else if (!modalidad) {
+            modalidadesNoReconocidas++;
+
+            advertencias.push({
+              fila: numeroFila,
+              codigo_cliente:
+                codigoCliente,
+              modalidad:
+                limpiarTexto(modalidadExcel),
+              motivo:
+                `Modalidad no reconocida: ` +
+                `${limpiarTexto(modalidadExcel)}. ` +
+                `Se importó el cliente, pero no se creó la asignación comercial.`
+            });
+          }
 
           const frecuenciaExcel =
             valorCampo(
@@ -1178,11 +1312,16 @@ router.post(
               ? vendedor.id
               : null;
 
+          let clienteIdProcesado = null;
+
           if (
             existente.rows.length > 0
           ) {
             const clienteActual =
               existente.rows[0];
+
+            clienteIdProcesado =
+              clienteActual.id;
 
             if (
               clienteActual.activo === false
@@ -1388,7 +1527,8 @@ router.post(
             =============================
             */
 
-            await db.query(
+            const nuevoCliente =
+              await db.query(
               `
               INSERT INTO clientes (
                 codigo_cliente,
@@ -1420,6 +1560,7 @@ router.post(
                 $11,
                 true
               )
+              RETURNING id
               `,
               [
                 codigoCliente,
@@ -1436,11 +1577,47 @@ router.post(
               ]
             );
 
+            clienteIdProcesado =
+              nuevoCliente.rows[0].id;
+
             if (vendedorDirecto) {
               clientesAsignadosDirectamente++;
             }
 
             importados++;
+          }
+
+          /*
+          =============================
+          GUARDAR ASIGNACIÓN COMERCIAL
+          =============================
+
+          El cliente físico sigue siendo único en clientes.
+          Cada fila válida del maestro conserva además su
+          modalidad + ruta + vendedor + frecuencia.
+          */
+          if (
+            clienteIdProcesado &&
+            modalidad
+          ) {
+            const resultadoAsignacion =
+              await guardarAsignacionCliente({
+                clienteId:
+                  clienteIdProcesado,
+                modalidad,
+                rutaId,
+                vendedorId:
+                  vendedor
+                    ? vendedor.id
+                    : null,
+                frecuenciaId
+              });
+
+            if (resultadoAsignacion.creada) {
+              asignacionesCreadas++;
+            } else if (resultadoAsignacion.existente) {
+              asignacionesExistentes++;
+            }
           }
 
         } catch (errorFila) {
@@ -1762,6 +1939,20 @@ router.post(
         rutasSinVendedorExcel,
 
         clientesAsignadosDirectamente,
+
+        asignacionesComerciales: {
+          creadas:
+            asignacionesCreadas,
+
+          ya_existentes:
+            asignacionesExistentes,
+
+          filas_sin_modalidad:
+            filasSinModalidad,
+
+          modalidades_no_reconocidas:
+            modalidadesNoReconocidas
+        },
 
         vendedoresEncontrados:
           vendedoresEncontrados.size,
