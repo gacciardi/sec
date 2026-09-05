@@ -10,17 +10,66 @@ router.get("/rutas", async (req, res) => {
         r.id,
         r.nombre,
         r.activo,
+        r.tipo_atencion,
         r.vendedor_id AS vendedor_titular_id,
         TRIM(COALESCE(u.nombre,'') || ' ' || COALESCE(u.apellido,'')) AS vendedor_titular
       FROM rutas r
       LEFT JOIN usuarios u ON u.id = r.vendedor_id
       WHERE r.activo = true
-      ORDER BY r.nombre
+      ORDER BY
+        CASE
+          WHEN r.nombre ~ '^[0-9]+$' THEN r.nombre::int
+          ELSE 999999
+        END,
+        r.nombre
     `);
     res.json(result.rows);
   } catch (error) {
     console.error("ERROR LISTANDO RUTAS:", error);
     res.status(500).json({ error: "Error al listar rutas", detalle: error.message });
+  }
+});
+
+router.patch("/rutas/:rutaId/tipo-atencion", async (req, res) => {
+  try {
+    const rutaId = req.params.rutaId;
+    const tipoAtencion = String(req.body?.tipo_atencion || "").trim().toUpperCase();
+
+    const permitidos = ["PRESENCIAL", "TELEVENTAS", "FACE_AND_CALL"];
+
+    if (!permitidos.includes(tipoAtencion)) {
+      return res.status(400).json({
+        error: "Tipo de atención inválido",
+        permitidos
+      });
+    }
+
+    const result = await db.query(
+      `
+      UPDATE rutas
+      SET
+        tipo_atencion = $1,
+        updated_at = NOW()
+      WHERE id = $2
+      RETURNING id, nombre, tipo_atencion, vendedor_id, activo
+      `,
+      [tipoAtencion, rutaId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "No se encontró la ruta" });
+    }
+
+    res.json({
+      mensaje: "Tipo de atención actualizado correctamente",
+      ruta: result.rows[0]
+    });
+  } catch (error) {
+    console.error("ERROR ACTUALIZANDO TIPO DE ATENCION:", error);
+    res.status(500).json({
+      error: "Error al actualizar el tipo de atención",
+      detalle: error.message
+    });
   }
 });
 
