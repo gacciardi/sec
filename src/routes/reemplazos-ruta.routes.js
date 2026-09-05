@@ -73,6 +73,187 @@ router.patch("/rutas/:rutaId/tipo-atencion", async (req, res) => {
   }
 });
 
+
+/*
+=================================
+MODALIDADES DE ATENCION
+CONFIGURACION DINAMICA APK
+=================================
+*/
+
+router.get("/modalidades", async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT
+        id,
+        codigo,
+        descripcion,
+        enviar_apk,
+        activo,
+        created_at,
+        updated_at
+      FROM modalidades_atencion
+      ORDER BY codigo ASC
+    `);
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error("ERROR LISTANDO MODALIDADES:", error);
+    res.status(500).json({
+      error: "Error al listar modalidades",
+      detalle: error.message
+    });
+  }
+});
+
+router.post("/modalidades", async (req, res) => {
+  try {
+    const codigo = String(req.body?.codigo || "")
+      .trim()
+      .toUpperCase();
+
+    const descripcion = String(req.body?.descripcion || "")
+      .trim();
+
+    const enviarApk = req.body?.enviar_apk === true;
+    const activo = req.body?.activo !== false;
+
+    if (!codigo) {
+      return res.status(400).json({
+        error: "El código es obligatorio"
+      });
+    }
+
+    if (!/^[A-Z0-9_-]{1,20}$/.test(codigo)) {
+      return res.status(400).json({
+        error: "El código solo puede contener letras, números, guion y guion bajo, con un máximo de 20 caracteres"
+      });
+    }
+
+    if (!descripcion) {
+      return res.status(400).json({
+        error: "La descripción es obligatoria"
+      });
+    }
+
+    if (descripcion.length > 100) {
+      return res.status(400).json({
+        error: "La descripción no puede superar los 100 caracteres"
+      });
+    }
+
+    const result = await db.query(
+      `
+      INSERT INTO modalidades_atencion (
+        codigo,
+        descripcion,
+        enviar_apk,
+        activo
+      )
+      VALUES ($1, $2, $3, $4)
+      RETURNING
+        id,
+        codigo,
+        descripcion,
+        enviar_apk,
+        activo,
+        created_at,
+        updated_at
+      `,
+      [
+        codigo,
+        descripcion,
+        enviarApk,
+        activo
+      ]
+    );
+
+    res.status(201).json({
+      mensaje: "Modalidad creada correctamente",
+      modalidad: result.rows[0]
+    });
+  } catch (error) {
+    if (error.code === "23505") {
+      return res.status(409).json({
+        error: "Ya existe una modalidad con ese código"
+      });
+    }
+
+    console.error("ERROR CREANDO MODALIDAD:", error);
+    res.status(500).json({
+      error: "Error al crear modalidad",
+      detalle: error.message
+    });
+  }
+});
+
+router.patch("/modalidades/:modalidadId", async (req, res) => {
+  try {
+    const modalidadId = req.params.modalidadId;
+
+    const descripcion = String(req.body?.descripcion || "")
+      .trim();
+
+    const enviarApk = req.body?.enviar_apk === true;
+    const activo = req.body?.activo === true;
+
+    if (!descripcion) {
+      return res.status(400).json({
+        error: "La descripción es obligatoria"
+      });
+    }
+
+    if (descripcion.length > 100) {
+      return res.status(400).json({
+        error: "La descripción no puede superar los 100 caracteres"
+      });
+    }
+
+    const result = await db.query(
+      `
+      UPDATE modalidades_atencion
+      SET
+        descripcion = $1,
+        enviar_apk = $2,
+        activo = $3,
+        updated_at = NOW()
+      WHERE id = $4
+      RETURNING
+        id,
+        codigo,
+        descripcion,
+        enviar_apk,
+        activo,
+        created_at,
+        updated_at
+      `,
+      [
+        descripcion,
+        enviarApk,
+        activo,
+        modalidadId
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        error: "Modalidad no encontrada"
+      });
+    }
+
+    res.json({
+      mensaje: "Modalidad actualizada correctamente",
+      modalidad: result.rows[0]
+    });
+  } catch (error) {
+    console.error("ERROR ACTUALIZANDO MODALIDAD:", error);
+    res.status(500).json({
+      error: "Error al actualizar modalidad",
+      detalle: error.message
+    });
+  }
+});
+
 router.get("/vendedores", async (req, res) => {
   try {
     const result = await db.query(`
