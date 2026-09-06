@@ -2093,6 +2093,9 @@ router.get(
       =================================
       VENDEDOR NORMAL
       INCLUYE REEMPLAZOS DE RUTA
+      USA ASIGNACIONES COMERCIALES
+      + TIPO DE RUTA
+      + CONFIGURACION DINAMICA APK
       =================================
       */
 
@@ -2131,9 +2134,129 @@ router.get(
               ON true
 
             WHERE r.activo = true
+          ),
+
+          asignaciones_apk AS (
+
+            SELECT DISTINCT ON (asig.cliente_id)
+
+              asig.cliente_id,
+              asig.frecuencia_id,
+              asig.ruta_id,
+              asig.vendedor_id
+                AS vendedor_asignado_id,
+              asig.modalidad,
+
+              r.nombre
+                AS ruta,
+
+              COALESCE(
+                re.vendedor_efectivo_id,
+                asig.vendedor_id
+              ) AS vendedor_efectivo_id,
+
+              fr.nombre
+                AS frecuencia
+
+            FROM clientes_asignaciones asig
+
+            INNER JOIN modalidades_atencion ma
+              ON ma.codigo = asig.modalidad
+             AND ma.activo = true
+             AND ma.enviar_apk = true
+
+            LEFT JOIN rutas r
+              ON r.id = asig.ruta_id
+             AND r.activo = true
+
+            LEFT JOIN rutas_efectivas re
+              ON re.ruta_id = asig.ruta_id
+
+            LEFT JOIN frecuencias fr
+              ON fr.id = asig.frecuencia_id
+
+            WHERE asig.activo = true
+
+              AND (
+
+                (
+                  asig.ruta_id IS NOT NULL
+                  AND r.tipo_atencion = 'PRESENCIAL'
+                  AND re.vendedor_efectivo_id = $1
+                )
+
+                OR
+
+                (
+                  asig.ruta_id IS NULL
+                  AND asig.vendedor_id = $1
+                )
+
+              )
+
+              AND (
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 1
+                  AND fr.lunes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 2
+                  AND fr.martes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 3
+                  AND fr.miercoles = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 4
+                  AND fr.jueves = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 5
+                  AND fr.viernes = true
+                )
+
+                OR
+
+                (
+                  EXTRACT(
+                    ISODOW FROM CURRENT_DATE
+                  ) = 6
+                  AND fr.sabado = true
+                )
+
+              )
+
+            ORDER BY
+              asig.cliente_id,
+              asig.updated_at DESC,
+              asig.created_at DESC
           )
 
-          SELECT DISTINCT
+          SELECT
 
             c.id,
             c.codigo_cliente,
@@ -2146,34 +2269,26 @@ router.get(
             c.categoria,
 
             ca.nombre AS canal,
-            fr.nombre AS frecuencia,
+
+            a.frecuencia,
 
             c.es_ejecucion
               AS programa_ejecucion,
 
             c.semana_ejecucion,
 
-            r.nombre AS ruta,
+            a.ruta,
 
-            COALESCE(
-              re.vendedor_efectivo_id,
-              c.vendedor_id
-            ) AS vendedor_id,
+            a.vendedor_efectivo_id
+              AS vendedor_id,
 
             CASE
 
-              WHEN reemplazo_usuario.id IS NOT NULL
+              WHEN u_efectivo.id IS NOT NULL
               THEN TRIM(
-                COALESCE(reemplazo_usuario.nombre, '') ||
+                COALESCE(u_efectivo.nombre, '') ||
                 ' ' ||
-                COALESCE(reemplazo_usuario.apellido, '')
-              )
-
-              WHEN uc.id IS NOT NULL
-              THEN TRIM(
-                COALESCE(uc.nombre, '') ||
-                ' ' ||
-                COALESCE(uc.apellido, '')
+                COALESCE(u_efectivo.apellido, '')
               )
 
               ELSE NULL
@@ -2189,48 +2304,25 @@ router.get(
             NULL::uuid
               AS ruta_trade_id,
 
-            r.nombre
-              AS ruta_comercial
+            a.ruta
+              AS ruta_comercial,
 
-          FROM clientes c
+            a.modalidad
+
+          FROM asignaciones_apk a
+
+          INNER JOIN clientes c
+            ON c.id = a.cliente_id
 
           LEFT JOIN canales ca
             ON ca.id = c.canal_id
 
-          LEFT JOIN frecuencias fr
-            ON fr.id = c.frecuencia_id
-
-          LEFT JOIN rutas r
-            ON r.id = c.ruta_id
-
-          LEFT JOIN rutas_efectivas re
-            ON re.ruta_id = c.ruta_id
-
-          LEFT JOIN usuarios reemplazo_usuario
-            ON reemplazo_usuario.id =
-               re.vendedor_efectivo_id
-
-          LEFT JOIN usuarios uc
-            ON uc.id = c.vendedor_id
+          LEFT JOIN usuarios u_efectivo
+            ON u_efectivo.id =
+               a.vendedor_efectivo_id
 
           WHERE c.deleted_at IS NULL
             AND c.activo = true
-
-            AND (
-
-              (
-                c.ruta_id IS NOT NULL
-                AND re.vendedor_efectivo_id = $1
-              )
-
-              OR
-
-              (
-                c.ruta_id IS NULL
-                AND c.vendedor_id = $1
-              )
-
-            )
 
             AND (
               c.es_ejecucion = false
@@ -2243,62 +2335,6 @@ router.get(
                     ((EXTRACT(DAY FROM CURRENT_DATE)::int - 1) / 7) + 1
                   )
               )
-            )
-
-            AND (
-
-              (
-                EXTRACT(
-                  ISODOW FROM CURRENT_DATE
-                ) = 1
-                AND fr.lunes = true
-              )
-
-              OR
-
-              (
-                EXTRACT(
-                  ISODOW FROM CURRENT_DATE
-                ) = 2
-                AND fr.martes = true
-              )
-
-              OR
-
-              (
-                EXTRACT(
-                  ISODOW FROM CURRENT_DATE
-                ) = 3
-                AND fr.miercoles = true
-              )
-
-              OR
-
-              (
-                EXTRACT(
-                  ISODOW FROM CURRENT_DATE
-                ) = 4
-                AND fr.jueves = true
-              )
-
-              OR
-
-              (
-                EXTRACT(
-                  ISODOW FROM CURRENT_DATE
-                ) = 5
-                AND fr.viernes = true
-              )
-
-              OR
-
-              (
-                EXTRACT(
-                  ISODOW FROM CURRENT_DATE
-                ) = 6
-                AND fr.sabado = true
-              )
-
             )
 
           ORDER BY
