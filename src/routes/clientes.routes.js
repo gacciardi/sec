@@ -241,7 +241,6 @@ router.get("/", async (req, res) => {
         LEFT JOIN usuarios ur
           ON ur.id = r.vendedor_id
 
-
         LEFT JOIN LATERAL (
           SELECT
             COUNT(*)::int AS cantidad_asignaciones,
@@ -432,6 +431,43 @@ router.get("/", async (req, res) => {
 
         LEFT JOIN usuarios ur
           ON ur.id = r.vendedor_id
+
+        LEFT JOIN LATERAL (
+          SELECT
+            COUNT(*)::int AS cantidad_asignaciones,
+            JSON_AGG(
+              JSON_BUILD_OBJECT(
+                'id', a.id,
+                'modalidad', a.modalidad,
+                'ruta_id', a.ruta_id,
+                'ruta', ar.nombre,
+                'vendedor_id', a.vendedor_id,
+                'vendedor',
+                  TRIM(
+                    COALESCE(au.nombre, '') ||
+                    ' ' ||
+                    COALESCE(au.apellido, '')
+                  ),
+                'frecuencia_id', a.frecuencia_id,
+                'frecuencia', af.nombre
+              )
+              ORDER BY
+                ar.nombre,
+                au.apellido,
+                au.nombre,
+                af.nombre
+            ) AS asignaciones
+          FROM clientes_asignaciones a
+          LEFT JOIN rutas ar
+            ON ar.id = a.ruta_id
+          LEFT JOIN usuarios au
+            ON au.id = a.vendedor_id
+          LEFT JOIN frecuencias af
+            ON af.id = a.frecuencia_id
+          WHERE a.cliente_id = c.id
+            AND a.activo = true
+        ) asig_resumen
+          ON true
 
         ${where}
 
@@ -3298,43 +3334,6 @@ router.get(
           LEFT JOIN usuarios ur
             ON ur.id =
                r.vendedor_id
-
-            LEFT JOIN LATERAL (
-  SELECT
-    COUNT(*)::int AS cantidad_asignaciones,
-    JSON_AGG(
-      JSON_BUILD_OBJECT(
-        'id', a.id,
-        'modalidad', a.modalidad,
-        'ruta_id', a.ruta_id,
-        'ruta', ar.nombre,
-        'vendedor_id', a.vendedor_id,
-        'vendedor',
-          TRIM(
-            COALESCE(au.nombre, '') ||
-            ' ' ||
-            COALESCE(au.apellido, '')
-          ),
-        'frecuencia_id', a.frecuencia_id,
-        'frecuencia', af.nombre
-      )
-      ORDER BY
-        ar.nombre,
-        au.apellido,
-        au.nombre,
-        af.nombre
-    ) AS asignaciones
-  FROM clientes_asignaciones a
-  LEFT JOIN rutas ar
-    ON ar.id = a.ruta_id
-  LEFT JOIN usuarios au
-    ON au.id = a.vendedor_id
-  LEFT JOIN frecuencias af
-    ON af.id = a.frecuencia_id
-  WHERE a.cliente_id = c.id
-    AND a.activo = true
-) asig_resumen
-  ON true   
 
           ${where}
 
