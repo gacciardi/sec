@@ -38,18 +38,26 @@ router.get("/vendedores", async (req, res) => {
           COALESCE(
             reemplazo.vendedor_reemplazo_id,
             r.vendedor_id,
-            c.vendedor_id
+            asig.vendedor_id
           ) AS vendedor_id,
           c.id AS cliente_id
 
-        FROM clientes c
+        FROM clientes_asignaciones asig
+
+        INNER JOIN clientes c
+          ON c.id = asig.cliente_id
+
+        INNER JOIN modalidades_atencion ma
+          ON ma.codigo = asig.modalidad
+         AND ma.activo = true
+         AND ma.enviar_apk = true
 
         LEFT JOIN rutas r
-          ON r.id = c.ruta_id
+          ON r.id = asig.ruta_id
          AND r.activo = true
 
         LEFT JOIN frecuencias f
-          ON f.id = c.frecuencia_id
+          ON f.id = asig.frecuencia_id
 
         LEFT JOIN LATERAL (
           SELECT
@@ -63,13 +71,24 @@ router.get("/vendedores", async (req, res) => {
           LIMIT 1
         ) reemplazo ON true
 
-        WHERE c.deleted_at IS NULL
+        WHERE asig.activo = true
+          AND c.deleted_at IS NULL
           AND c.activo = true
-          AND COALESCE(
-                reemplazo.vendedor_reemplazo_id,
-                r.vendedor_id,
-                c.vendedor_id
-              ) IS NOT NULL
+          AND (
+            (
+              asig.ruta_id IS NOT NULL
+              AND r.tipo_atencion = 'PRESENCIAL'
+              AND COALESCE(
+                    reemplazo.vendedor_reemplazo_id,
+                    r.vendedor_id
+                  ) IS NOT NULL
+            )
+            OR
+            (
+              asig.ruta_id IS NULL
+              AND asig.vendedor_id IS NOT NULL
+            )
+          )
           AND ${DIA_SQL}
 
           /*
@@ -284,18 +303,26 @@ router.get("/alertas-operativas", async (req, res) => {
           COALESCE(
             reemplazo.vendedor_reemplazo_id,
             r.vendedor_id,
-            c.vendedor_id
+            asig.vendedor_id
           ) AS vendedor_id,
           c.id AS cliente_id
 
-        FROM clientes c
+        FROM clientes_asignaciones asig
+
+        INNER JOIN clientes c
+          ON c.id = asig.cliente_id
+
+        INNER JOIN modalidades_atencion ma
+          ON ma.codigo = asig.modalidad
+         AND ma.activo = true
+         AND ma.enviar_apk = true
 
         LEFT JOIN rutas r
-          ON r.id = c.ruta_id
+          ON r.id = asig.ruta_id
          AND r.activo = true
 
         LEFT JOIN frecuencias f
-          ON f.id = c.frecuencia_id
+          ON f.id = asig.frecuencia_id
 
         LEFT JOIN LATERAL (
           SELECT
@@ -309,13 +336,24 @@ router.get("/alertas-operativas", async (req, res) => {
           LIMIT 1
         ) reemplazo ON true
 
-        WHERE c.deleted_at IS NULL
+        WHERE asig.activo = true
+          AND c.deleted_at IS NULL
           AND c.activo = true
-          AND COALESCE(
-                reemplazo.vendedor_reemplazo_id,
-                r.vendedor_id,
-                c.vendedor_id
-              ) IS NOT NULL
+          AND (
+            (
+              asig.ruta_id IS NOT NULL
+              AND r.tipo_atencion = 'PRESENCIAL'
+              AND COALESCE(
+                    reemplazo.vendedor_reemplazo_id,
+                    r.vendedor_id
+                  ) IS NOT NULL
+            )
+            OR
+            (
+              asig.ruta_id IS NULL
+              AND asig.vendedor_id IS NOT NULL
+            )
+          )
           AND ${DIA_SQL}
 
           /*
@@ -627,16 +665,24 @@ router.get("/vendedores/:id", async (req, res) => {
 
           2 AS prioridad_origen
 
-        FROM clientes c
+        FROM clientes_asignaciones asig
+
+        INNER JOIN clientes c
+          ON c.id = asig.cliente_id
+
+        INNER JOIN modalidades_atencion ma
+          ON ma.codigo = asig.modalidad
+         AND ma.activo = true
+         AND ma.enviar_apk = true
 
         LEFT JOIN canales ca
           ON ca.id = c.canal_id
 
         LEFT JOIN frecuencias f
-          ON f.id = c.frecuencia_id
+          ON f.id = asig.frecuencia_id
 
         LEFT JOIN rutas r
-          ON r.id = c.ruta_id
+          ON r.id = asig.ruta_id
          AND r.activo = true
 
         LEFT JOIN LATERAL (
@@ -652,14 +698,25 @@ router.get("/vendedores/:id", async (req, res) => {
           LIMIT 1
         ) reemplazo ON true
 
-        WHERE c.deleted_at IS NULL
+        WHERE asig.activo = true
+          AND c.deleted_at IS NULL
           AND c.activo = true
 
-          AND COALESCE(
-                reemplazo.vendedor_reemplazo_id,
-                r.vendedor_id,
-                c.vendedor_id
-              ) = $1
+          AND (
+            (
+              asig.ruta_id IS NOT NULL
+              AND r.tipo_atencion = 'PRESENCIAL'
+              AND COALESCE(
+                    reemplazo.vendedor_reemplazo_id,
+                    r.vendedor_id
+                  ) = $1
+            )
+            OR
+            (
+              asig.ruta_id IS NULL
+              AND asig.vendedor_id = $1
+            )
+          )
 
           AND ${DIA_SQL}
 
