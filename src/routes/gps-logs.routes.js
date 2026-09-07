@@ -560,15 +560,28 @@ async function obtenerClientesAsignados(
         30
       ) AS radio_geocerca
 
-    FROM clientes c
+    FROM clientes_asignaciones asig
+
+    INNER JOIN clientes c
+      ON c.id = asig.cliente_id
+
+    INNER JOIN modalidades_atencion ma
+      ON ma.codigo = asig.modalidad
+     AND ma.activo = true
+     AND ma.enviar_apk = true
+
+    LEFT JOIN rutas r
+      ON r.id = asig.ruta_id
+     AND r.activo = true
 
     LEFT JOIN rutas_efectivas re
-      ON re.ruta_id = c.ruta_id
+      ON re.ruta_id = asig.ruta_id
 
     LEFT JOIN frecuencias fr
-      ON fr.id = c.frecuencia_id
+      ON fr.id = asig.frecuencia_id
 
-    WHERE c.deleted_at IS NULL
+    WHERE asig.activo = true
+      AND c.deleted_at IS NULL
       AND c.activo = true
 
       AND c.latitud IS NOT NULL
@@ -578,13 +591,14 @@ async function obtenerClientesAsignados(
 
       AND (
         (
-          c.ruta_id IS NOT NULL
+          asig.ruta_id IS NOT NULL
+          AND r.tipo_atencion = 'PRESENCIAL'
           AND re.vendedor_efectivo_id = $1
         )
 
         OR (
-          c.ruta_id IS NULL
-          AND c.vendedor_id = $1
+          asig.ruta_id IS NULL
+          AND asig.vendedor_id = $1
         )
       )
 
@@ -817,12 +831,25 @@ async function obtenerTodosClientesAsignados(
         30
       ) AS radio_geocerca
 
-    FROM clientes c
+    FROM clientes_asignaciones asig
+
+    INNER JOIN clientes c
+      ON c.id = asig.cliente_id
+
+    INNER JOIN modalidades_atencion ma
+      ON ma.codigo = asig.modalidad
+     AND ma.activo = true
+     AND ma.enviar_apk = true
+
+    LEFT JOIN rutas r
+      ON r.id = asig.ruta_id
+     AND r.activo = true
 
     LEFT JOIN rutas_efectivas re
-      ON re.ruta_id = c.ruta_id
+      ON re.ruta_id = asig.ruta_id
 
-    WHERE c.deleted_at IS NULL
+    WHERE asig.activo = true
+      AND c.deleted_at IS NULL
       AND c.activo = true
       AND c.latitud IS NOT NULL
       AND c.longitud IS NOT NULL
@@ -831,13 +858,14 @@ async function obtenerTodosClientesAsignados(
 
       AND (
         (
-          c.ruta_id IS NOT NULL
+          asig.ruta_id IS NOT NULL
+          AND r.tipo_atencion = 'PRESENCIAL'
           AND re.vendedor_efectivo_id = $1
         )
 
         OR (
-          c.ruta_id IS NULL
-          AND c.vendedor_id = $1
+          asig.ruta_id IS NULL
+          AND asig.vendedor_id = $1
         )
       )
 
