@@ -732,10 +732,14 @@ router.get(
           fe.*,
           c.codigo_cliente AS cliente_codigo,
           c.nombre AS cliente_nombre,
-          c.direccion AS cliente_direccion
+          c.direccion AS cliente_direccion,
+          u.nombre AS vendedor_nombre,
+          u.apellido AS vendedor_apellido
         FROM fotos_evidencias fe
         LEFT JOIN clientes c
           ON c.id::text = fe.cliente_id
+        LEFT JOIN usuarios u
+          ON u.id::text = fe.vendedor_id
         ${where}
         ORDER BY
           fe.fecha_captura DESC,
