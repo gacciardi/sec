@@ -735,7 +735,7 @@ router.get(
           c.direccion AS cliente_direccion
         FROM fotos_evidencias fe
         LEFT JOIN clientes c
-          ON c.id = fe.cliente_id
+          ON c.id::text = fe.cliente_id
         ${where}
         ORDER BY
           fe.fecha_captura DESC,
