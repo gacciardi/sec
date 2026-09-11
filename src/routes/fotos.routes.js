@@ -681,42 +681,42 @@ router.get(
 
       if (vendedor_id) {
         agregarCondicion(
-          "vendedor_id = ?",
+          "fe.vendedor_id = ?",
           vendedor_id
         );
       }
 
       if (cliente_id) {
         agregarCondicion(
-          "cliente_id = ?",
+          "fe.cliente_id = ?",
           cliente_id
         );
       }
 
       if (visita_id) {
         agregarCondicion(
-          "visita_id = ?",
+          "fe.visita_id = ?",
           visita_id
         );
       }
 
       if (estado) {
         agregarCondicion(
-          "estado = ?",
+          "fe.estado = ?",
           estado
         );
       }
 
       if (fecha_desde) {
         agregarCondicion(
-          "fecha_captura >= ?",
+          "fe.fecha_captura >= ?",
           fecha_desde
         );
       }
 
       if (fecha_hasta) {
         agregarCondicion(
-          "fecha_captura < (?::date + INTERVAL '1 day')",
+          "fe.fecha_captura < (?::date + INTERVAL '1 day')",
           fecha_hasta
         );
       }
@@ -728,12 +728,18 @@ router.get(
 
       const resultado = await db.query(
         `
-        SELECT *
-        FROM fotos_evidencias
+        SELECT
+          fe.*,
+          c.codigo_cliente AS cliente_codigo,
+          c.nombre AS cliente_nombre,
+          c.direccion AS cliente_direccion
+        FROM fotos_evidencias fe
+        LEFT JOIN clientes c
+          ON c.id = fe.cliente_id
         ${where}
         ORDER BY
-          fecha_captura DESC,
-          created_at DESC
+          fe.fecha_captura DESC,
+          fe.created_at DESC
         LIMIT 500
         `,
         valores
