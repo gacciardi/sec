@@ -502,13 +502,35 @@ router.get("/", async (req, res) => {
                     ' ' ||
                     COALESCE(au.apellido, '')
                   ),
+                'vendedor_efectivo_id',
+                  COALESCE(
+                    reemplazo_asig.vendedor_reemplazo_id,
+                    ar.vendedor_id,
+                    a.vendedor_id
+                  ),
+                'vendedor_efectivo',
+                  TRIM(
+                    COALESCE(ue.nombre, '') ||
+                    ' ' ||
+                    COALESCE(ue.apellido, '')
+                  ),
+                'origen_vendedor',
+                  CASE
+                    WHEN reemplazo_asig.id IS NOT NULL
+                    THEN 'REEMPLAZO'
+                    WHEN ar.vendedor_id IS NOT NULL
+                    THEN 'TITULAR'
+                    WHEN a.vendedor_id IS NOT NULL
+                    THEN 'DIRECTO'
+                    ELSE 'SIN_ASIGNAR'
+                  END,
                 'frecuencia_id', a.frecuencia_id,
                 'frecuencia', af.nombre
               )
               ORDER BY
                 ar.nombre,
-                au.apellido,
-                au.nombre,
+                ue.apellido,
+                ue.nombre,
                 af.nombre
             ) AS asignaciones
           FROM clientes_asignaciones a
@@ -516,6 +538,26 @@ router.get("/", async (req, res) => {
             ON ar.id = a.ruta_id
           LEFT JOIN usuarios au
             ON au.id = a.vendedor_id
+          LEFT JOIN LATERAL (
+            SELECT
+              rr.id,
+              rr.vendedor_reemplazo_id
+            FROM reemplazos_ruta rr
+            WHERE rr.ruta_id = a.ruta_id
+              AND rr.activo = true
+              AND CURRENT_DATE
+                  BETWEEN rr.fecha_desde
+                      AND rr.fecha_hasta
+            ORDER BY rr.created_at DESC
+            LIMIT 1
+          ) reemplazo_asig
+            ON true
+          LEFT JOIN usuarios ue
+            ON ue.id = COALESCE(
+              reemplazo_asig.vendedor_reemplazo_id,
+              ar.vendedor_id,
+              a.vendedor_id
+            )
           LEFT JOIN frecuencias af
             ON af.id = a.frecuencia_id
           WHERE a.cliente_id = c.id
