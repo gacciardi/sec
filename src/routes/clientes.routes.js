@@ -171,11 +171,65 @@ router.get("/", async (req, res) => {
       const posicion =
         params.length;
 
+      /*
+      El filtro por vendedor debe considerar al vendedor
+      EFECTIVO de la asignación comercial. Si existe un
+      reemplazo vigente en la ruta, el cliente pertenece
+      temporalmente al reemplazante.
+
+      Se conserva el criterio presencial utilizado por la APK:
+      - asignación activa
+      - modalidad activa y habilitada para APK
+      - ruta PRESENCIAL
+      - reemplazo vigente, si existe
+      - asignación directa cuando no hay ruta
+      */
       where += `
-        AND COALESCE(
-          r.vendedor_id,
-          c.vendedor_id
-        ) = $${posicion}::uuid
+        AND EXISTS (
+          SELECT 1
+          FROM clientes_asignaciones af
+
+          INNER JOIN modalidades_atencion maf
+            ON maf.codigo = af.modalidad
+           AND maf.activo = true
+           AND maf.enviar_apk = true
+
+          LEFT JOIN rutas rf
+            ON rf.id = af.ruta_id
+           AND rf.activo = true
+
+          LEFT JOIN LATERAL (
+            SELECT
+              rr.vendedor_reemplazo_id
+            FROM reemplazos_ruta rr
+            WHERE rr.ruta_id = af.ruta_id
+              AND rr.activo = true
+              AND CURRENT_DATE
+                  BETWEEN rr.fecha_desde
+                      AND rr.fecha_hasta
+            ORDER BY rr.created_at DESC
+            LIMIT 1
+          ) reemplazo_filtro
+            ON true
+
+          WHERE af.cliente_id = c.id
+            AND af.activo = true
+            AND (
+              (
+                af.ruta_id IS NOT NULL
+                AND rf.tipo_atencion = 'PRESENCIAL'
+                AND COALESCE(
+                  reemplazo_filtro.vendedor_reemplazo_id,
+                  rf.vendedor_id
+                ) = $${posicion}::uuid
+              )
+              OR
+              (
+                af.ruta_id IS NULL
+                AND af.vendedor_id = $${posicion}::uuid
+              )
+            )
+        )
       `;
     }
 
@@ -1691,82 +1745,146 @@ router.get(
         WITH parametros AS (
           SELECT COALESCE($2::date, CURRENT_DATE) AS fecha_consulta
         ),
+
+        rutas_efectivas AS (
+          SELECT
+            r.id AS ruta_id,
+            COALESCE(
+              reemplazo.vendedor_reemplazo_id,
+              r.vendedor_id
+            ) AS vendedor_efectivo_id
+          FROM rutas r
+          CROSS JOIN parametros par
+          LEFT JOIN LATERAL (
+            SELECT
+              rr.vendedor_reemplazo_id
+            FROM reemplazos_ruta rr
+            WHERE rr.ruta_id = r.id
+              AND rr.activo = true
+              AND par.fecha_consulta
+                  BETWEEN rr.fecha_desde
+                      AND rr.fecha_hasta
+            ORDER BY rr.created_at DESC
+            LIMIT 1
+          ) reemplazo
+            ON true
+          WHERE r.activo = true
+        ),
+
         programados AS (
-          SELECT DISTINCT c.id AS cliente_id
-          FROM clientes c
-          LEFT JOIN rutas r ON r.id = c.ruta_id
-          LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
-          CROSS JOIN parametros p
+          SELECT DISTINCT ON (asig.cliente_id)
+            asig.cliente_id,
+            asig.frecuencia_id,
+            asig.ruta_id,
+            asig.modalidad
+          FROM clientes_asignaciones asig
+
+          INNER JOIN clientes c
+            ON c.id = asig.cliente_id
+
+          INNER JOIN modalidades_atencion ma
+            ON ma.codigo = asig.modalidad
+           AND ma.activo = true
+           AND ma.enviar_apk = true
+
+          LEFT JOIN rutas r
+            ON r.id = asig.ruta_id
+           AND r.activo = true
+
+          LEFT JOIN rutas_efectivas re
+            ON re.ruta_id = asig.ruta_id
+
+          LEFT JOIN frecuencias fr
+            ON fr.id = asig.frecuencia_id
+
+          CROSS JOIN parametros par
+
           WHERE c.deleted_at IS NULL
             AND c.activo = true
+            AND asig.activo = true
+
             AND (
-              (r.vendedor_id = $1 AND r.activo = true)
-              OR (r.vendedor_id IS NULL AND c.vendedor_id = $1)
+              (
+                asig.ruta_id IS NOT NULL
+                AND r.tipo_atencion = 'PRESENCIAL'
+                AND re.vendedor_efectivo_id = $1
+              )
+              OR
+              (
+                asig.ruta_id IS NULL
+                AND asig.vendedor_id = $1
+              )
             )
+
             AND (
               c.es_ejecucion = false
               OR (
                 c.es_ejecucion = true
                 AND c.semana_ejecucion IS NOT NULL
                 AND c.semana_ejecucion =
-                  (((EXTRACT(DAY FROM p.fecha_consulta)::int - 1) / 7) + 1)
+                  (((EXTRACT(DAY FROM par.fecha_consulta)::int - 1) / 7) + 1)
               )
             )
+
             AND (
-              (EXTRACT(ISODOW FROM p.fecha_consulta) = 1 AND fr.lunes = true)
-              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 2 AND fr.martes = true)
-              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 3 AND fr.miercoles = true)
-              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 4 AND fr.jueves = true)
-              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 5 AND fr.viernes = true)
-              OR (EXTRACT(ISODOW FROM p.fecha_consulta) = 6 AND fr.sabado = true)
+              (EXTRACT(ISODOW FROM par.fecha_consulta) = 1 AND fr.lunes = true)
+              OR (EXTRACT(ISODOW FROM par.fecha_consulta) = 2 AND fr.martes = true)
+              OR (EXTRACT(ISODOW FROM par.fecha_consulta) = 3 AND fr.miercoles = true)
+              OR (EXTRACT(ISODOW FROM par.fecha_consulta) = 4 AND fr.jueves = true)
+              OR (EXTRACT(ISODOW FROM par.fecha_consulta) = 5 AND fr.viernes = true)
+              OR (EXTRACT(ISODOW FROM par.fecha_consulta) = 6 AND fr.sabado = true)
             )
+
+          ORDER BY
+            asig.cliente_id,
+            asig.updated_at DESC,
+            asig.created_at DESC
         ),
+
         visitas_dia AS (
           SELECT
             v.cliente_id,
             MIN(v.hora_llegada) AS hora_llegada,
             MAX(v.hora_salida) AS hora_salida,
             SUM(
-                CASE
-                  WHEN v.hora_llegada IS NULL
-                  THEN 0
-                  WHEN v.hora_salida IS NULL
-                  THEN GREATEST(
-                    0,
-                    EXTRACT(
-                      EPOCH FROM (
-                        NOW() - v.hora_llegada
-                      )
-                    )::int
-                  )
-                  ELSE GREATEST(
-                    0,
-                    EXTRACT(
-                      EPOCH FROM (
-                        v.hora_salida - v.hora_llegada
-                      )
-                    )::int
-                  )
-                END
-              )::int AS permanencia_segundos,
+              CASE
+                WHEN v.hora_llegada IS NULL
+                THEN 0
+                WHEN v.hora_salida IS NULL
+                THEN GREATEST(
+                  0,
+                  EXTRACT(
+                    EPOCH FROM (
+                      NOW() - v.hora_llegada
+                    )
+                  )::int
+                )
+                ELSE GREATEST(
+                  0,
+                  EXTRACT(
+                    EPOCH FROM (
+                      v.hora_salida - v.hora_llegada
+                    )
+                  )::int
+                )
+              END
+            )::int AS permanencia_segundos,
             COUNT(*)::int AS cantidad_visitas
           FROM visitas v
-          CROSS JOIN parametros p
+          CROSS JOIN parametros par
           WHERE v.vendedor_id = $1
-            AND v.fecha = p.fecha_consulta
+            AND v.fecha = par.fecha_consulta
           GROUP BY v.cliente_id
         ),
+
         ejecuciones_dia AS (
           SELECT DISTINCT
             ced.cliente_id,
             ced.motivo
-
           FROM clientes_extra_dia ced
-
-          CROSS JOIN parametros p
-
+          CROSS JOIN parametros par
           WHERE ced.vendedor_id = $1
-            AND ced.fecha = p.fecha_consulta
+            AND ced.fecha = par.fecha_consulta
             AND ced.activo = true
         ),
 
@@ -1781,6 +1899,7 @@ router.get(
 
           SELECT cliente_id FROM ejecuciones_dia
         )
+
         SELECT
           c.id,
           c.codigo_cliente,
@@ -1795,7 +1914,9 @@ router.get(
           c.es_ejecucion AS programa_ejecucion,
           c.semana_ejecucion,
           r.nombre AS ruta,
-           (p.cliente_id IS NOT NULL) AS programado,
+          p.modalidad,
+
+          (p.cliente_id IS NOT NULL) AS programado,
 
           (vd.cliente_id IS NOT NULL) AS visitado,
 
@@ -1807,14 +1928,19 @@ router.get(
           vd.hora_salida,
           COALESCE(vd.permanencia_segundos, 0)::int AS permanencia_segundos,
           COALESCE(vd.cantidad_visitas, 0)::int AS cantidad_visitas,
+
           CASE
             WHEN c.latitud IS NULL OR c.longitud IS NULL
               OR c.latitud = 0 OR c.longitud = 0
             THEN false
             ELSE true
           END AS tiene_coordenadas
+
         FROM universo u
-        INNER JOIN clientes c ON c.id = u.cliente_id
+
+        INNER JOIN clientes c
+          ON c.id = u.cliente_id
+
         LEFT JOIN programados p
           ON p.cliente_id = c.id
 
@@ -1826,9 +1952,15 @@ router.get(
 
         LEFT JOIN canales ca
           ON ca.id = c.canal_id
-        LEFT JOIN frecuencias fr ON fr.id = c.frecuencia_id
-        LEFT JOIN rutas r ON r.id = c.ruta_id
+
+        LEFT JOIN frecuencias fr
+          ON fr.id = p.frecuencia_id
+
+        LEFT JOIN rutas r
+          ON r.id = p.ruta_id
+
         WHERE c.deleted_at IS NULL
+
         ORDER BY
           CASE WHEN vd.cliente_id IS NOT NULL THEN 1 ELSE 0 END,
           c.nombre ASC
