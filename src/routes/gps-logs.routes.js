@@ -1444,6 +1444,59 @@ router.get(
 
 /*
 =================================
+RECORRIDO HISTÓRICO DEL VENDEDOR
+=================================
+Consulta de solo lectura. No modifica GPS,
+visitas, sesiones ni geocercas.
+=================================
+*/
+router.get("/vendedor/:id/recorrido", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fecha } = req.query;
+
+    if (!fecha || !/^\d{4}-\d{2}-\d{2}$/.test(String(fecha))) {
+      return res.status(400).json({
+        error: "Debe indicar una fecha válida en formato YYYY-MM-DD"
+      });
+    }
+
+    const result = await db.query(
+      `
+      SELECT
+        latitud,
+        longitud,
+        precision_metros,
+        velocidad,
+        fecha_hora
+      FROM gps_logs
+      WHERE vendedor_id = $1
+        AND fecha_hora >= $2::date
+        AND fecha_hora < ($2::date + INTERVAL '1 day')
+        AND latitud IS NOT NULL
+        AND longitud IS NOT NULL
+        AND latitud <> 0
+        AND longitud <> 0
+      ORDER BY fecha_hora ASC
+      `,
+      [id, fecha]
+    );
+
+    res.json({
+      vendedor_id: id,
+      fecha,
+      puntos: result.rows
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "Error al obtener recorrido GPS histórico",
+      detalle: error.message
+    });
+  }
+});
+
+/*
+=================================
 POST GPS MANUAL
 =================================
 */
