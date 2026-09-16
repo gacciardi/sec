@@ -100,9 +100,11 @@ router.get("/", async (req, res) => {
         c.direccion,
         c.localidad,
         c.categoria,
+        c.latitud AS cliente_latitud,
+        c.longitud AS cliente_longitud,
 
         ca.nombre AS canal,
-        r.nombre AS ruta,
+        asignacion.ruta,
 
         u.id AS vendedor_id,
         u.nombre || ' ' || u.apellido
@@ -113,6 +115,34 @@ router.get("/", async (req, res) => {
 
         MAX(v.hora_salida)
           AS ultima_salida,
+
+        (ARRAY_AGG(
+          v.latitud_llegada
+          ORDER BY v.hora_llegada ASC
+        ) FILTER (
+          WHERE v.latitud_llegada IS NOT NULL
+        ))[1] AS latitud_llegada,
+
+        (ARRAY_AGG(
+          v.longitud_llegada
+          ORDER BY v.hora_llegada ASC
+        ) FILTER (
+          WHERE v.longitud_llegada IS NOT NULL
+        ))[1] AS longitud_llegada,
+
+        (ARRAY_AGG(
+          v.latitud_salida
+          ORDER BY v.hora_salida DESC NULLS LAST
+        ) FILTER (
+          WHERE v.latitud_salida IS NOT NULL
+        ))[1] AS latitud_salida,
+
+        (ARRAY_AGG(
+          v.longitud_salida
+          ORDER BY v.hora_salida DESC NULLS LAST
+        ) FILTER (
+          WHERE v.longitud_salida IS NOT NULL
+        ))[1] AS longitud_salida,
 
         SUM(
           COALESCE(
@@ -161,11 +191,65 @@ router.get("/", async (req, res) => {
       LEFT JOIN usuarios u
         ON u.id = v.vendedor_id
 
-      LEFT JOIN rutas r
-        ON r.id = c.ruta_id
-
       LEFT JOIN canales ca
         ON ca.id = c.canal_id
+
+      /*
+      Ruta comercial que correspondía al vendedor
+      efectivo en la fecha de la visita.
+      No modifica ninguna asignación: sólo lectura.
+      */
+      LEFT JOIN LATERAL (
+        SELECT
+          r_asig.nombre AS ruta
+        FROM clientes_asignaciones asig
+
+        INNER JOIN modalidades_atencion ma
+          ON ma.codigo = asig.modalidad
+         AND ma.activo = true
+         AND ma.enviar_apk = true
+
+        LEFT JOIN rutas r_asig
+          ON r_asig.id = asig.ruta_id
+         AND r_asig.activo = true
+
+        LEFT JOIN LATERAL (
+          SELECT
+            rr.vendedor_reemplazo_id
+          FROM reemplazos_ruta rr
+          WHERE rr.ruta_id = asig.ruta_id
+            AND rr.activo = true
+            AND v.fecha
+                BETWEEN rr.fecha_desde
+                    AND rr.fecha_hasta
+          ORDER BY rr.created_at DESC
+          LIMIT 1
+        ) reemplazo
+          ON true
+
+        WHERE asig.cliente_id = v.cliente_id
+          AND asig.activo = true
+          AND (
+            (
+              asig.ruta_id IS NOT NULL
+              AND r_asig.tipo_atencion = 'PRESENCIAL'
+              AND COALESCE(
+                    reemplazo.vendedor_reemplazo_id,
+                    r_asig.vendedor_id
+                  ) = v.vendedor_id
+            )
+            OR
+            (
+              asig.ruta_id IS NULL
+              AND asig.vendedor_id = v.vendedor_id
+            )
+          )
+        ORDER BY
+          asig.updated_at DESC,
+          asig.created_at DESC
+        LIMIT 1
+      ) asignacion
+        ON true
 
       WHERE v.fecha BETWEEN $1 AND $2
 
@@ -183,9 +267,11 @@ router.get("/", async (req, res) => {
         c.direccion,
         c.localidad,
         c.categoria,
+        c.latitud,
+        c.longitud,
 
         ca.nombre,
-        r.nombre,
+        asignacion.ruta,
 
         u.id,
         u.nombre,
