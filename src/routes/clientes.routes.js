@@ -1911,7 +1911,20 @@ router.get(
                 )
               END
             )::int AS permanencia_segundos,
-            COUNT(*)::int AS cantidad_visitas
+            COUNT(*)::int AS cantidad_visitas,
+
+            JSON_AGG(
+              JSON_BUILD_OBJECT(
+                'hora_llegada', v.hora_llegada,
+                'hora_salida', v.hora_salida,
+                'permanencia_segundos',
+                CASE
+                  WHEN v.hora_llegada IS NULL THEN 0
+                  WHEN v.hora_salida IS NULL THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - v.hora_llegada))::int)
+                  ELSE GREATEST(0, EXTRACT(EPOCH FROM (v.hora_salida - v.hora_llegada))::int)
+                END
+              ) ORDER BY v.hora_llegada
+            ) AS detalle_visitas
           FROM visitas v
           CROSS JOIN parametros par
           WHERE v.vendedor_id = $1
@@ -1970,6 +1983,7 @@ router.get(
           vd.hora_salida,
           COALESCE(vd.permanencia_segundos, 0)::int AS permanencia_segundos,
           COALESCE(vd.cantidad_visitas, 0)::int AS cantidad_visitas,
+          COALESCE(vd.detalle_visitas, '[]'::json) AS detalle_visitas,
 
           CASE
             WHEN c.latitud IS NULL OR c.longitud IS NULL
