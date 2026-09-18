@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const db = require("../config/database");
 const ExcelJS = require("exceljs");
 
@@ -1827,7 +1827,10 @@ router.get(
           INNER JOIN modalidades_atencion ma
             ON ma.codigo = asig.modalidad
            AND ma.activo = true
-           AND ma.enviar_apk = true
+           AND (
+             ma.enviar_apk = true
+             OR c.es_ejecucion = true
+           )
 
           LEFT JOIN rutas r
             ON r.id = asig.ruta_id
@@ -2385,10 +2388,18 @@ router.get(
 
             FROM clientes_asignaciones asig
 
+            INNER JOIN clientes c_apk
+              ON c_apk.id = asig.cliente_id
+             AND c_apk.deleted_at IS NULL
+             AND c_apk.activo = true
+
             INNER JOIN modalidades_atencion ma
               ON ma.codigo = asig.modalidad
              AND ma.activo = true
-             AND ma.enviar_apk = true
+             AND (
+               ma.enviar_apk = true
+               OR c_apk.es_ejecucion = true
+             )
 
             LEFT JOIN rutas r
               ON r.id = asig.ruta_id
