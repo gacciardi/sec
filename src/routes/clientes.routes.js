@@ -2598,6 +2598,7 @@ CREAR CLIENTE
 */
 
 router.post("/", async (req, res) => {
+  const client = await db.connect();
   try {
     const {
       codigo_cliente,
@@ -2635,8 +2636,10 @@ router.post("/", async (req, res) => {
         radio_geocerca
       ) || 30;
 
+    await client.query("BEGIN");
+
     const result =
-      await db.query(
+      await client.query(
         `
         INSERT INTO clientes (
           codigo_cliente,
@@ -2686,15 +2689,38 @@ router.post("/", async (req, res) => {
         ]
       );
 
+    const clienteCreado = result.rows[0];
+
+    if (ruta_id || vendedor_id || frecuencia_id) {
+      await client.query(
+        `
+        INSERT INTO clientes_asignaciones (
+          cliente_id, modalidad, ruta_id, vendedor_id, frecuencia_id, activo
+        )
+        VALUES ($1, 'PR', $2, $3, $4, true)
+        `,
+        [
+          clienteCreado.id,
+          ruta_id || null,
+          vendedor_id || null,
+          frecuencia_id || null
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+
     res.status(201).json({
       mensaje:
         "Cliente creado correctamente",
 
       cliente:
-        result.rows[0]
+        clienteCreado
     });
 
   } catch (error) {
+    try { await client.query("ROLLBACK"); } catch (_) {}
+
     console.error(
       "ERROR CREANDO CLIENTE:",
       error
@@ -2707,6 +2733,8 @@ router.post("/", async (req, res) => {
       detalle:
         error.message
     });
+  } finally {
+    client.release();
   }
 });
 
@@ -5188,6 +5216,7 @@ ACTUALIZAR CLIENTE
 */
 
 router.put("/:id", async (req, res) => {
+  const client = await db.connect();
   try {
     const { id } =
       req.params;
@@ -5229,8 +5258,35 @@ router.put("/:id", async (req, res) => {
         radio_geocerca
       ) || 30;
 
+    await client.query("BEGIN");
+
+    const clienteAnteriorResult =
+      await client.query(
+        `
+        SELECT
+          ruta_id,
+          frecuencia_id
+        FROM clientes
+        WHERE id = $1
+          AND deleted_at IS NULL
+        FOR UPDATE
+        `,
+        [id]
+      );
+
+    if (clienteAnteriorResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({
+        error:
+          "Cliente no encontrado"
+      });
+    }
+
+    const clienteAnterior =
+      clienteAnteriorResult.rows[0];
+
     const result =
-      await db.query(
+      await client.query(
         `
         UPDATE clientes
         SET
@@ -5285,11 +5341,67 @@ router.put("/:id", async (req, res) => {
     if (
       result.rows.length === 0
     ) {
+      await client.query("ROLLBACK");
       return res.status(404).json({
         error:
           "Cliente no encontrado"
       });
     }
+
+    const asignacionPr = await client.query(
+      `
+      SELECT id
+      FROM clientes_asignaciones
+      WHERE cliente_id = $1
+        AND modalidad = 'PR'
+        AND activo = true
+        AND ruta_id IS NOT DISTINCT FROM $2::uuid
+        AND frecuencia_id IS NOT DISTINCT FROM $3::uuid
+      LIMIT 1
+      `,
+      [
+        id,
+        clienteAnterior.ruta_id,
+        clienteAnterior.frecuencia_id
+      ]
+    );
+
+    if (asignacionPr.rows.length > 0) {
+      await client.query(
+        `
+        UPDATE clientes_asignaciones
+        SET ruta_id = $2,
+            vendedor_id = $3,
+            frecuencia_id = $4,
+            activo = true,
+            updated_at = NOW()
+        WHERE id = $1
+        `,
+        [
+          asignacionPr.rows[0].id,
+          ruta_id || null,
+          vendedor_id || null,
+          frecuencia_id || null
+        ]
+      );
+    } else if (ruta_id || vendedor_id || frecuencia_id) {
+      await client.query(
+        `
+        INSERT INTO clientes_asignaciones (
+          cliente_id, modalidad, ruta_id, vendedor_id, frecuencia_id, activo
+        )
+        VALUES ($1, 'PR', $2, $3, $4, true)
+        `,
+        [
+          id,
+          ruta_id || null,
+          vendedor_id || null,
+          frecuencia_id || null
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
 
     res.json({
       mensaje:
@@ -5300,6 +5412,8 @@ router.put("/:id", async (req, res) => {
     });
 
   } catch (error) {
+    try { await client.query("ROLLBACK"); } catch (_) {}
+
     console.error(
       "ERROR ACTUALIZANDO CLIENTE:",
       error
@@ -5312,6 +5426,8 @@ router.put("/:id", async (req, res) => {
       detalle:
         error.message
     });
+  } finally {
+    client.release();
   }
 });
 
