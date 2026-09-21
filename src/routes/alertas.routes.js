@@ -17,7 +17,7 @@ router.get("/", async (req, res) => {
         u.nombre || ' ' || u.apellido AS vendedor
       FROM alertas a
       LEFT JOIN usuarios u ON u.id = a.vendedor_id
-      WHERE DATE(a.fecha_hora) = CURRENT_DATE
+      WHERE DATE(a.fecha_hora) = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Argentina/Buenos_Aires')::date
       ORDER BY a.fecha_hora DESC
     `);
 
@@ -63,7 +63,7 @@ router.post("/", async (req, res) => {
         longitud,
         fecha_hora
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,NOW())
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP AT TIME ZONE 'America/Argentina/Buenos_Aires')
       RETURNING *
       `,
       [
@@ -105,7 +105,7 @@ router.post("/control-login", async (req, res) => {
       WHERE rol = 'VENDEDOR'
         AND activo = true
         AND alerta_login_activa = true
-        AND hora_alerta_login <= CURRENT_TIME
+        AND hora_alerta_login <= (CURRENT_TIMESTAMP AT TIME ZONE 'America/Argentina/Buenos_Aires')::time
     `);
 
     const alertasCreadas = [];
@@ -117,7 +117,7 @@ router.post("/control-login", async (req, res) => {
         FROM alertas
         WHERE vendedor_id = $1
           AND tipo = 'LOGIN'
-          AND DATE(fecha_hora) = CURRENT_DATE
+          AND DATE(fecha_hora) = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Argentina/Buenos_Aires')::date
         LIMIT 1
         `,
         [v.id]
@@ -131,7 +131,7 @@ router.post("/control-login", async (req, res) => {
         FROM alertas
         WHERE vendedor_id = $1
           AND tipo = 'NO_LOGIN'
-          AND DATE(fecha_hora) = CURRENT_DATE
+          AND DATE(fecha_hora) = (CURRENT_TIMESTAMP AT TIME ZONE 'America/Argentina/Buenos_Aires')::date
         LIMIT 1
         `,
         [v.id]
@@ -148,7 +148,7 @@ router.post("/control-login", async (req, res) => {
           descripcion,
           fecha_hora
         )
-        VALUES ($1,'NO_LOGIN','ALTA',$2,NOW())
+        VALUES ($1,'NO_LOGIN','ALTA',$2,CURRENT_TIMESTAMP AT TIME ZONE 'America/Argentina/Buenos_Aires')
         RETURNING *
         `,
         [
