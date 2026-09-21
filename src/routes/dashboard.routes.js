@@ -673,7 +673,7 @@ router.get("/vendedores/:id", async (req, res) => {
         INNER JOIN modalidades_atencion ma
           ON ma.codigo = asig.modalidad
          AND ma.activo = true
-         AND ma.enviar_apk = true
+         AND (ma.enviar_apk = true OR c.es_ejecucion = true)
 
         LEFT JOIN canales ca
           ON ca.id = c.canal_id
