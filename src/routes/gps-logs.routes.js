@@ -568,7 +568,7 @@ async function obtenerClientesAsignados(
     INNER JOIN modalidades_atencion ma
       ON ma.codigo = asig.modalidad
      AND ma.activo = true
-     AND ma.enviar_apk = true
+     AND (ma.enviar_apk = true OR c.es_ejecucion = true)
 
     LEFT JOIN rutas r
       ON r.id = asig.ruta_id
@@ -839,7 +839,7 @@ async function obtenerTodosClientesAsignados(
     INNER JOIN modalidades_atencion ma
       ON ma.codigo = asig.modalidad
      AND ma.activo = true
-     AND ma.enviar_apk = true
+     AND (ma.enviar_apk = true OR c.es_ejecucion = true)
 
     LEFT JOIN rutas r
       ON r.id = asig.ruta_id
