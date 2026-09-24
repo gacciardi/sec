@@ -5610,5 +5610,329 @@ router.delete("/:id", async (req, res) => {
     });
   }
 });
+/*
+=================================
+ASIGNACIONES COMERCIALES CLIENTE
+=================================
+*/
+
+/*
+GET /clientes/:id/asignaciones
+Lista todas las asignaciones del cliente
+*/
+
+router.get("/:id/asignaciones", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await db.query(
+      `
+      SELECT
+        a.id,
+        a.cliente_id,
+        a.modalidad,
+        ma.descripcion AS modalidad_nombre,
+        a.ruta_id,
+        r.nombre AS ruta,
+        a.vendedor_id,
+        TRIM(
+          COALESCE(u.nombre, '') || ' ' ||
+          COALESCE(u.apellido, '')
+        ) AS vendedor,
+        a.frecuencia_id,
+        f.nombre AS frecuencia,
+        a.activo,
+        a.created_at,
+        a.updated_at
+      FROM clientes_asignaciones a
+
+      LEFT JOIN modalidades_atencion ma
+        ON ma.codigo = a.modalidad
+
+      LEFT JOIN rutas r
+        ON r.id = a.ruta_id
+
+      LEFT JOIN usuarios u
+        ON u.id = a.vendedor_id
+
+      LEFT JOIN frecuencias f
+        ON f.id = a.frecuencia_id
+
+      WHERE a.cliente_id = $1
+
+      ORDER BY
+        a.activo DESC,
+        a.modalidad,
+        vendedor
+      `,
+      [id]
+    );
+
+    res.json(result.rows);
+
+  } catch (error) {
+    console.error(
+      "ERROR OBTENIENDO ASIGNACIONES DEL CLIENTE:",
+      error
+    );
+
+    res.status(500).json({
+      error:
+        "Error al obtener asignaciones del cliente",
+      detalle:
+        error.message
+    });
+  }
+});
+
+
+/*
+POST /clientes/:id/asignaciones
+Agrega una nueva asignación
+*/
+
+router.post("/:id/asignaciones", async (req, res) => {
+  const client = await db.connect();
+
+  try {
+    const { id } = req.params;
+
+    const {
+      modalidad,
+      ruta_id,
+      vendedor_id,
+      frecuencia_id
+    } = req.body || {};
+
+    if (!modalidad) {
+      return res.status(400).json({
+        error:
+          "Debe seleccionar una modalidad"
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const clienteResult =
+      await client.query(
+        `
+        SELECT id
+        FROM clientes
+        WHERE id = $1
+          AND deleted_at IS NULL
+        `,
+        [id]
+      );
+
+    if (clienteResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(404).json({
+        error:
+          "Cliente no encontrado"
+      });
+    }
+
+    const modalidadResult =
+      await client.query(
+        `
+        SELECT codigo
+        FROM modalidades_atencion
+        WHERE codigo = $1
+          AND activo = true
+        `,
+        [modalidad]
+      );
+
+    if (modalidadResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+
+      return res.status(400).json({
+        error:
+          "La modalidad seleccionada no existe o está inactiva"
+      });
+    }
+
+    const result =
+      await client.query(
+        `
+        INSERT INTO clientes_asignaciones (
+          cliente_id,
+          modalidad,
+          ruta_id,
+          vendedor_id,
+          frecuencia_id,
+          activo
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          true
+        )
+        RETURNING *
+        `,
+        [
+          id,
+          modalidad,
+          ruta_id || null,
+          vendedor_id || null,
+          frecuencia_id || null
+        ]
+      );
+
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      mensaje:
+        "Asignación creada correctamente",
+      asignacion:
+        result.rows[0]
+    });
+
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
+
+    console.error(
+      "ERROR CREANDO ASIGNACION:",
+      error
+    );
+
+    res.status(500).json({
+      error:
+        "Error al crear asignación",
+      detalle:
+        error.message
+    });
+
+  } finally {
+    client.release();
+  }
+});
+
+
+/*
+PUT /clientes/:clienteId/asignaciones/:asignacionId
+Actualiza una asignación individual
+*/
+
+router.put(
+  "/:clienteId/asignaciones/:asignacionId",
+  async (req, res) => {
+
+    const client = await db.connect();
+
+    try {
+      const {
+        clienteId,
+        asignacionId
+      } = req.params;
+
+      const {
+        modalidad,
+        ruta_id,
+        vendedor_id,
+        frecuencia_id,
+        activo
+      } = req.body || {};
+
+      if (!modalidad) {
+        return res.status(400).json({
+          error:
+            "Debe seleccionar una modalidad"
+        });
+      }
+
+      await client.query("BEGIN");
+
+      const modalidadResult =
+        await client.query(
+          `
+          SELECT codigo
+          FROM modalidades_atencion
+          WHERE codigo = $1
+          `,
+          [modalidad]
+        );
+
+      if (modalidadResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+
+        return res.status(400).json({
+          error:
+            "La modalidad seleccionada no existe"
+        });
+      }
+
+      const result =
+        await client.query(
+          `
+          UPDATE clientes_asignaciones
+          SET
+            modalidad = $1,
+            ruta_id = $2,
+            vendedor_id = $3,
+            frecuencia_id = $4,
+            activo = $5,
+            updated_at = NOW()
+          WHERE id = $6
+            AND cliente_id = $7
+          RETURNING *
+          `,
+          [
+            modalidad,
+            ruta_id || null,
+            vendedor_id || null,
+            frecuencia_id || null,
+            activo !== false,
+            asignacionId,
+            clienteId
+          ]
+        );
+
+      if (result.rows.length === 0) {
+        await client.query("ROLLBACK");
+
+        return res.status(404).json({
+          error:
+            "Asignación no encontrada"
+        });
+      }
+
+      await client.query("COMMIT");
+
+      res.json({
+        mensaje:
+          "Asignación actualizada correctamente",
+        asignacion:
+          result.rows[0]
+      });
+
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (_) {}
+
+      console.error(
+        "ERROR ACTUALIZANDO ASIGNACION:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          "Error al actualizar asignación",
+        detalle:
+          error.message
+      });
+
+    } finally {
+      client.release();
+    }
+  }
+);
 
 module.exports = router;
