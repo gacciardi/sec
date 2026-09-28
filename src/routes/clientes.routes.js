@@ -5271,6 +5271,65 @@ router.put("/:id", async (req, res) => {
 
     await client.query("BEGIN");
 
+    /*
+    La ruta determina el vendedor. No se permite guardar un
+    vendedor distinto del titular de la ruta porque al volver
+    a cargar la grilla el vendedor de la ruta tiene prioridad
+    y el cambio aparenta haberse deshecho.
+    */
+    let vendedorValidado =
+      vendedor_id || null;
+
+    if (ruta_id) {
+      const rutaResult =
+        await client.query(
+          `
+          SELECT
+            r.id,
+            r.nombre,
+            r.vendedor_id,
+            TRIM(
+              COALESCE(u.nombre, '') || ' ' ||
+              COALESCE(u.apellido, '')
+            ) AS vendedor
+          FROM rutas r
+          LEFT JOIN usuarios u
+            ON u.id = r.vendedor_id
+          WHERE r.id = $1
+            AND r.activo = true
+          `,
+          [ruta_id]
+        );
+
+      if (rutaResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "La ruta seleccionada no existe o está inactiva"
+        });
+      }
+
+      const rutaSeleccionada =
+        rutaResult.rows[0];
+
+      if (
+        vendedor_id &&
+        rutaSeleccionada.vendedor_id &&
+        vendedor_id !==
+          rutaSeleccionada.vendedor_id
+      ) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error:
+            `La ruta ${rutaSeleccionada.nombre} pertenece a ${rutaSeleccionada.vendedor || "otro vendedor"}. Seleccioná una ruta correspondiente al vendedor elegido.`
+        });
+      }
+
+      vendedorValidado =
+        rutaSeleccionada.vendedor_id ||
+        vendedorValidado;
+    }
+
     const clienteAnteriorResult =
       await client.query(
         `
@@ -5337,7 +5396,7 @@ router.put("/:id", async (req, res) => {
           radio,
           canal_id || null,
           frecuencia_id || null,
-          vendedor_id || null,
+          vendedorValidado,
           ruta_id || null,
           categoria || null,
 
@@ -5391,11 +5450,31 @@ router.put("/:id", async (req, res) => {
         [
           asignacionPr.rows[0].id,
           ruta_id || null,
-          vendedor_id || null,
+          vendedorValidado,
           frecuencia_id || null
         ]
       );
-    } else if (ruta_id || vendedor_id || frecuencia_id) {
+    } else if (ruta_id || vendedorValidado || frecuencia_id) {
+      const cantidadPrResult =
+        await client.query(
+          `
+          SELECT COUNT(*)::int AS cantidad
+          FROM clientes_asignaciones
+          WHERE cliente_id = $1
+            AND modalidad = 'PR'
+            AND activo = true
+          `,
+          [id]
+        );
+
+      if (cantidadPrResult.rows[0].cantidad > 0) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error:
+            "El cliente tiene más de una asignación presencial y no se pudo determinar cuál modificar. Usá el botón Asignaciones para editar la frecuencia correspondiente."
+        });
+      }
+
       await client.query(
         `
         INSERT INTO clientes_asignaciones (
@@ -5406,7 +5485,7 @@ router.put("/:id", async (req, res) => {
         [
           id,
           ruta_id || null,
-          vendedor_id || null,
+          vendedorValidado,
           frecuencia_id || null
         ]
       );
