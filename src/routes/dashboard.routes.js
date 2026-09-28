@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const db = require("../config/database");
 
 const router = express.Router();
@@ -50,7 +50,10 @@ router.get("/vendedores", async (req, res) => {
         INNER JOIN modalidades_atencion ma
           ON ma.codigo = asig.modalidad
          AND ma.activo = true
-         AND ma.enviar_apk = true
+         AND (
+           ma.enviar_apk = true
+           OR c.es_ejecucion = true
+         )
 
         LEFT JOIN rutas r
           ON r.id = asig.ruta_id
@@ -315,7 +318,10 @@ router.get("/alertas-operativas", async (req, res) => {
         INNER JOIN modalidades_atencion ma
           ON ma.codigo = asig.modalidad
          AND ma.activo = true
-         AND ma.enviar_apk = true
+         AND (
+           ma.enviar_apk = true
+           OR c.es_ejecucion = true
+         )
 
         LEFT JOIN rutas r
           ON r.id = asig.ruta_id
