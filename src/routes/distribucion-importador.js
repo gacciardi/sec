@@ -1,7 +1,11 @@
 const XLSX = require('xlsx');
+
 function identificador(v) { return v == null ? '' : String(v).trim(); }
 function numero(v) {
-  if (typeof v === 'number') return v;
+  if (typeof v === 'number') {
+    if (!Number.isFinite(v)) throw Error('Número inválido');
+    return v;
+  }
   const s = identificador(v);
   if (!s) return null;
   const n = Number(s.includes(',') ? s.replace(/\./g, '').replace(',', '.') : s);
@@ -23,23 +27,48 @@ function leer(buffer) {
   const wb = XLSX.read(buffer, {type:'buffer', cellDates:true});
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null});
 }
-function pedidos(buffer, empresa, clientes) {
-  const rows = leer(buffer), seen = new Set(), errores = [], resultado = [];
+function pedidos(buffer, empresa, clientes = {}) {
+  const rows = leer(buffer), seen = new Set(), agrupados = new Map(), errores = [], resultado = [];
   if (!rows.length) throw Error('El archivo no tiene registros');
-  for (const k of ['COD_CLI','FECHAENTREGA','PEDIDO']) if (!(k in rows[0])) throw Error('Falta columna ' + k);
+  for (const k of ['COD_CLI','FECHAENTREGA']) {
+    if (!(k in rows[0])) throw Error('Falta columna ' + k);
+  }
+  const tienePedido = 'PEDIDO' in rows[0];
+  if (!tienePedido && !('N_DESPACHO' in rows[0])) throw Error('Falta columna PEDIDO o N_DESPACHO');
   rows.forEach((r,i) => {
     try {
-      const codigo = identificador(r.COD_CLI), pedido = identificador(r.PEDIDO);
-      if (!codigo || !pedido) throw Error('Cliente o pedido vacío');
-      const dia = fecha(r.FECHAENTREGA), clave = `${empresa}|${dia}|${pedido}`;
-      if (seen.has(clave)) throw Error('Pedido duplicado en el archivo');
-      seen.add(clave);
+      const codigo = identificador(r.COD_CLI), despacho = identificador(r.N_DESPACHO);
+      if (!codigo) throw Error('Cliente vacío');
+      const dia = fecha(r.FECHAENTREGA);
+      // Sin número de pedido, cada parada tiene una referencia estable.
+      // No depende del orden de las filas y conserva los pedidos numerados.
+      const pedido = tienePedido ? identificador(r.PEDIDO) :
+        'AUTO:' + JSON.stringify([despacho, codigo]);
+      if (tienePedido && !pedido) throw Error('Pedido vacío');
+      if (!tienePedido && !despacho) throw Error('Despacho vacío: necesario cuando no hay PEDIDO');
+      const key = JSON.stringify([empresa, dia, pedido]);
       const c = clientes[codigo];
-      resultado.push({empresa, fecha:dia, codigo, pedido, cliente:identificador(r.CLIENTE),
-        conductor:identificador(r.Chofer), despacho:identificador(r.N_DESPACHO),
+      const p = {empresa, fecha:dia, codigo, pedido, cliente:identificador(r.CLIENTE),
+        conductor:identificador(r.Chofer), despacho,
         cantidad:numero(r.CANTIDAD), importe:numero(r.IMPORTE),
         lat:c?.lat ?? null, lng:c?.lng ?? null, direccion:c?.direccion ?? '',
-        coincidencia:!!c, estado:'Pendiente'});
+        coincidencia:!!c, estado:'Pendiente'};
+      if (tienePedido) {
+        if (seen.has(key)) throw Error('Pedido duplicado en el archivo');
+        seen.add(key);
+        resultado.push(p);
+      } else {
+        const anterior = agrupados.get(key);
+        if (anterior) {
+          if (anterior.conductor !== p.conductor) throw Error('Cliente y despacho con distintos conductores');
+          for (const campo of ['cantidad','importe']) {
+            if (p[campo] !== null) anterior[campo] = (anterior[campo] ?? 0) + p[campo];
+          }
+        } else {
+          agrupados.set(key, p);
+          resultado.push(p);
+        }
+      }
     } catch(e) { errores.push({fila:i+2,motivo:e.message}); }
   });
   return {pedidos:resultado, errores};
