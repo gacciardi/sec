@@ -9,7 +9,35 @@ const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
 async function transaction(fn){const c=await db.connect();try{await c.query('BEGIN');const r=await fn(c);await c.query('COMMIT');return r;}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 async function audit(c,a,action,detail){await c.query('INSERT INTO distribucion.auditoria(empresa_id,actor_id,accion,detalle) VALUES($1,$2,$3,$4)',[a.empresa_id,a.id,action,JSON.stringify(detail)]);}
 function credenciales(b){for(const k of ['legajo','nombre','apellido'])if(typeof b[k]!=='string'||!b[k].trim()||b[k].length>(k==='legajo'?20:100))throw error('Completar '+k);if(typeof b.clave!=='string'||b.clave.length<8||b.clave.length>128)throw error('Clave: entre 8 y 128 caracteres');}
-async function alta(c,empresa,b,rol){credenciales(b);const u=await c.query(`INSERT INTO public.usuarios(nombre,apellido,email,rol,legajo,activo) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,[b.nombre.trim(),b.apellido.trim(),b.email||`${crypto.randomUUID()}@sec.invalid`,rol,b.legajo.trim(),b.activo!==false]);const r=await c.query(`INSERT INTO distribucion.miembros(empresa_id,usuario_id,legajo,nombre,apellido,telefono,rol,clave_hash,activo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id,legajo,nombre,apellido,telefono,rol,activo`,[empresa,u.rows[0].id,b.legajo.trim(),b.nombre.trim(),b.apellido.trim(),b.telefono||'',rol,clave(b.clave),b.activo!==false]);return r.rows[0];}
+async function alta(c,empresa,b,rol){
+ credenciales(b);
+ const enlace=await c.query(`
+  SELECT e.id AS empresa_id,s.id AS sector_id
+  FROM distribucion.empresas de
+  JOIN public.empresas e ON lower(e.codigo)=lower(de.codigo)
+  JOIN public.sectores s ON s.empresa_id=e.id
+  WHERE de.id=$1 AND de.activo=true AND e.activo=true
+    AND s.activo=true AND upper(s.codigo)='DISTRIBUCION'
+ `,[empresa]);
+ if(enlace.rowCount!==1)throw error('Empresa o sector Distribucion no disponible',409);
+ const vinculo=enlace.rows[0];
+ const u=await c.query(`
+  INSERT INTO public.usuarios
+   (nombre,apellido,email,rol,legajo,activo,empresa_id,sector_id)
+  VALUES($1,$2,$3,'CONDUCTOR',$4,$5,$6,$7) RETURNING id
+ `,[b.nombre.trim(),b.apellido.trim(),
+    b.email||`${crypto.randomUUID()}@sec.invalid`,
+    b.legajo.trim(),b.activo!==false,
+    vinculo.empresa_id,vinculo.sector_id]);
+ const r=await c.query(`
+  INSERT INTO distribucion.miembros
+   (empresa_id,usuario_id,legajo,nombre,apellido,telefono,rol,clave_hash,activo)
+  VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+  RETURNING id,legajo,nombre,apellido,telefono,rol,activo
+ `,[empresa,u.rows[0].id,b.legajo.trim(),b.nombre.trim(),
+    b.apellido.trim(),b.telefono||'',rol,clave(b.clave),b.activo!==false]);
+ return r.rows[0];
+}
 // Una sola inicialización por empresa, protegida por una clave del servidor.
 router.post('/inicializar',wrap(async(req,res)=>{
  const secret=process.env.SEC_DISTRIBUCION_BOOTSTRAP;
