@@ -77,6 +77,7 @@ app.get("/canales", async (req, res) => {
 app.use("/frecuencias", frecuenciasRoutes);
 app.use("/clientes", clientesRoutes);
 app.use("/visitas", visitasRoutes);
+app.use("/gps-logs", require("./routes/distribucion-gps-apk")(require("./config/database")));
 app.use("/gps-logs", gpsLogsRoutes);
 app.use("/alertas", alertasRoutes);
 app.use("/clientes/importar-excel", clientesImportRoutes);
@@ -93,6 +94,7 @@ app.use("/auditoria", auditoriaRoutes);
 app.use("/reemplazos-ruta", reemplazosRutaRoutes);
 app.use("/fotos", fotosRoutes);
 app.use("/diagnostico-rutas", diagnosticoRutasRoutes);
+app.use("/distribucion", require("./routes/distribucion.routes"));
 const PORT = process.env.PORT || 7890;
 
 app.listen(PORT, () => {
