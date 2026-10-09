@@ -225,4 +225,4 @@ router.use((e,req,res,next)=>{console.error('Distribución:',e.code||e.message);
 
 module.exports=router;
 
-module.exports._test=has
+module.exports._test={hash,clave,verifica,credenciales};
