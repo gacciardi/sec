@@ -27,6 +27,18 @@ function leer(buffer) {
   const wb = XLSX.read(buffer, {type:'buffer', cellDates:true});
   return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null});
 }
+// La fecha del Excel corresponde a la preparación del reparto.
+// Se entrega al día siguiente; los domingos no hay reparto.
+function fechaReparto(v) {
+  const origen = fecha(v);
+  const d = new Date(origen + 'T00:00:00Z');
+  if (!Number.isFinite(d.getTime()) || d.toISOString().slice(0,10) !== origen) {
+    throw Error('Fecha inválida: ' + origen);
+  }
+  d.setUTCDate(d.getUTCDate() + 1);
+  if (d.getUTCDay() === 0) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0,10);
+}
 function pedidos(buffer, empresa, clientes = {}) {
   const rows = leer(buffer), seen = new Set(), agrupados = new Map(), errores = [], resultado = [];
   if (!rows.length) throw Error('El archivo no tiene registros');
@@ -39,7 +51,7 @@ function pedidos(buffer, empresa, clientes = {}) {
     try {
       const codigo = identificador(r.COD_CLI), despacho = identificador(r.N_DESPACHO);
       if (!codigo) throw Error('Cliente vacío');
-      const dia = fecha(r.FECHAENTREGA);
+      const dia = fechaReparto(r.FECHAENTREGA);
       // Sin número de pedido, cada parada tiene una referencia estable.
       // No depende del orden de las filas y conserva los pedidos numerados.
       const pedido = tienePedido ? identificador(r.PEDIDO) :
