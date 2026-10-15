@@ -2,7 +2,38 @@ const express = require("express");
 const multer = require("multer");
 const XLSX = require("xlsx");
 const fs = require("fs");
-const db = require("../config/database");
+const pool = require("../config/database");
+const { AsyncLocalStorage } = require("node:async_hooks");
+const contextoImportacion = new AsyncLocalStorage();
+const db = { query: (...args) => (contextoImportacion.getStore() || pool).query(...args) };
+
+// La importación completa usa una sola conexión: un error revierte todo.
+function importacionAtomica(fn) {
+  return async (req, res) => {
+    let c, respuesta, estado = 200;
+    const salida = {
+      status(n) { estado = n; return this; },
+      json(datos) { respuesta = datos; return this; }
+    };
+    try {
+      c = await pool.connect();
+      await c.query("BEGIN");
+      const lock = await c.query("SELECT pg_try_advisory_xact_lock(73159421) AS obtenido");
+      if (!lock.rows[0].obtenido) {
+        await c.query("ROLLBACK");
+        if (req.file?.path && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(409).json({error: "Ya hay una importación de clientes en curso"});
+      }
+      await contextoImportacion.run(c, () => fn(req, salida));
+      if (respuesta === undefined) throw Error("La importación no produjo una respuesta");
+      await c.query(estado >= 400 ? "ROLLBACK" : "COMMIT");
+      return res.status(estado).json(respuesta);
+    } catch (e) {
+      if (c) { try { await c.query("ROLLBACK"); } catch (_) {} }
+      return res.status(500).json({error: "Importación cancelada; no se guardaron cambios", detalle: e.message});
+    } finally { if (c) c.release(); }
+  };
+}
 
 const router = express.Router();
 
@@ -875,7 +906,7 @@ IMPORTAR CLIENTES
 router.post(
   "/",
   upload.single("archivo"),
-  async (req, res) => {
+  importacionAtomica(async (req, res) => {
     let archivoTemporal = null;
 
     try {
@@ -937,6 +968,14 @@ router.post(
 
       const vendedores =
         await cargarVendedores();
+
+      const camposModalidad = ["Modalidad de atencion", "Modalidad de atención", "modalidad_de_atencion", "modalidad_de_atención", "modalidad", "modo", "tipo_modalidad", "tipo modalidad"];
+      const maestroHabitual = !filas.some(f => limpiarTexto(valorCampoMultiple(f, camposModalidad)));
+      const rutasConfiguradas = await db.query("SELECT id,nombre,tipo_atencion,vendedor_id FROM rutas");
+      const tiposRuta = new Map(rutasConfiguradas.rows.map(r => [normalizarTextoComparacion(r.nombre), r]));
+      const sincronizarPr = new Map();
+      let asignacionesPrRetiradas = 0;
+      let fichasPrSincronizadas = 0;
 
       let importados = 0;
       let actualizados = 0;
@@ -1143,10 +1182,16 @@ router.post(
               ]
             );
 
-          const modalidad =
-            normalizarModalidad(
-              modalidadExcel
-            );
+          let modalidad = normalizarModalidad(modalidadExcel);
+          if (maestroHabitual) {
+            const nombreRuta = normalizarCodigo(valorCampo(fila, "ruta"));
+            const configuracion = tiposRuta.get(normalizarTextoComparacion(nombreRuta));
+            if (!configuracion || !["PRESENCIAL", "FACE_AND_CALL", "FACE_AND_WHATSAPP", "TELEVENTA", "WHATSAPP"].includes(configuracion.tipo_atencion)) {
+              throw Error("Ruta sin configuración de atención reconocida: " + (nombreRuta || "vacía"));
+            }
+            // Solo PRESENCIAL genera PR. Las otras modalidades existentes se conservan.
+            modalidad = configuracion.tipo_atencion === "PRESENCIAL" ? "PR" : null;
+          }
 
           if (!limpiarTexto(modalidadExcel)) {
             filasSinModalidad++;
@@ -1245,6 +1290,11 @@ router.post(
 
           const vendedor =
             vendedorResultado.vendedor;
+
+          if (maestroHabitual) {
+            if (!frecuenciaId) throw Error("Frecuencia no encontrada: " + frecuenciaExcel);
+            if (!vendedor || !vendedor.activo) throw Error("Vendedor no resuelto o inactivo: " + (vendedorResultado.valorBuscado || "vacío"));
+          }
 
           if (vendedor) {
             vendedoresEncontrados.add(
@@ -1670,6 +1720,11 @@ router.post(
           Cada fila válida del maestro conserva además su
           modalidad + ruta + vendedor + frecuencia.
           */
+          if (maestroHabitual && clienteIdProcesado) {
+            if (!sincronizarPr.has(clienteIdProcesado)) sincronizarPr.set(clienteIdProcesado, []);
+            if (modalidad === "PR") sincronizarPr.get(clienteIdProcesado).push({rutaId, vendedorId: vendedor.id, frecuenciaId});
+          }
+
           if (
             clienteIdProcesado &&
             modalidad
@@ -1716,6 +1771,13 @@ router.post(
       RESOLVER RUTA -> VENDEDOR
       =================================
       */
+
+      if (omitidos > 0) {
+        return res.status(422).json({error: "Importación cancelada; corregir las filas indicadas. No se guardaron cambios.", omitidos, errores, advertencias});
+      }
+      if ([...auditoriaRutas.values()].some(r => r.vendedoresIds.size !== 1 || r.clientesSinVendedor > 0)) {
+        return res.status(422).json({error: "Importación cancelada: hay rutas con vendedores ambiguos o sin resolver. No se guardaron cambios.", rutas: [...auditoriaRutas.values()].filter(r => r.vendedoresIds.size !== 1 || r.clientesSinVendedor > 0).map(r => ({ruta:r.ruta, vendedores:[...r.vendedoresExcel]}))});
+      }
 
       const detalleRutas = [];
 
@@ -1851,6 +1913,33 @@ router.post(
             clientes_sin_vendedor_resuelto:
               registro.clientesSinVendedor
           });
+        }
+      }
+
+      if (maestroHabitual) {
+        for (const [clienteId, filasPr] of sincronizarPr) {
+          const unicas = [...new Map(filasPr.map(a => [JSON.stringify([a.rutaId,a.vendedorId,a.frecuenciaId]),a])).values()];
+          const actuales = await db.query("SELECT id,ruta_id,vendedor_id,frecuencia_id FROM clientes_asignaciones WHERE cliente_id=$1 AND modalidad='PR' AND activo=true ORDER BY id FOR UPDATE", [clienteId]);
+          const claves = new Set(unicas.map(a => JSON.stringify([a.rutaId,a.vendedorId,a.frecuenciaId])));
+          const vistas = new Set(), retirar = [];
+          for (const a of actuales.rows) {
+            const k = JSON.stringify([a.ruta_id,a.vendedor_id,a.frecuencia_id]);
+            if (!claves.has(k) || vistas.has(k)) retirar.push(a.id);
+            else vistas.add(k);
+          }
+          if (retirar.length) {
+            await db.query("UPDATE clientes_asignaciones SET activo=false,updated_at=NOW() WHERE cliente_id=$1 AND modalidad='PR' AND id=ANY($2::uuid[])", [clienteId,retirar]);
+            asignacionesPrRetiradas += retirar.length;
+          }
+          // Preferir la PR que ya era principal; si cambió, elegir una vigente.
+          // Se conservan todas las PR del maestro, incluidas distintas frecuencias.
+          if (unicas.length) {
+            const ficha = await db.query("SELECT ruta_id,frecuencia_id FROM clientes WHERE id=$1",[clienteId]);
+            const anterior = ficha.rows[0];
+            const principal = unicas.find(a=>a.rutaId===anterior?.ruta_id && a.frecuenciaId===anterior?.frecuencia_id) || unicas[0];
+            await db.query("UPDATE clientes SET ruta_id=$2,frecuencia_id=$3,vendedor_id=NULL,updated_at=NOW() WHERE id=$1 AND (ruta_id IS DISTINCT FROM $2::uuid OR frecuencia_id IS DISTINCT FROM $3::uuid OR vendedor_id IS NOT NULL)",[clienteId,principal.rutaId,principal.frecuenciaId]);
+            fichasPrSincronizadas++;
+          }
         }
       }
 
@@ -1990,8 +2079,10 @@ router.post(
         );
 
       res.json({
-        mensaje:
-          "Importación finalizada",
+        mensaje: "Importación finalizada",
+        maestroHabitual,
+        asignacionesPrRetiradas,
+        fichasPrSincronizadas,
 
         filas:
           filas.length,
@@ -2123,7 +2214,7 @@ router.post(
         }
       }
     }
-  }
+  })
 );
 
 module.exports = router;
