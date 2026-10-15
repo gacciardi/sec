@@ -108,6 +108,8 @@ function normalizarTextoComparacion(valor) {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase()
+    // Equivalencia confirmada entre el maestro histórico y Usuarios.
+    .replace(/\bCICCOLALO\b/g, "CICCOLALLO")
     .replace(/[.,;:()[\]{}"'`´]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -534,7 +536,15 @@ async function cargarVendedores() {
       legajo,
       activo
     FROM usuarios
-    WHERE UPPER(TRIM(rol)) = 'VENDEDOR'
+    WHERE deleted_at IS NULL
+      AND (
+        UPPER(TRIM(rol)) = 'VENDEDOR'
+        OR id IN (
+          SELECT vendedor_id
+          FROM rutas
+          WHERE vendedor_id IS NOT NULL
+        )
+      )
     ORDER BY nombre, apellido
     `
   );
@@ -971,6 +981,34 @@ router.post(
 
       const camposModalidad = ["Modalidad de atencion", "Modalidad de atención", "modalidad_de_atencion", "modalidad_de_atención", "modalidad", "modo", "tipo_modalidad", "tipo modalidad"];
       const maestroHabitual = !filas.some(f => limpiarTexto(valorCampoMultiple(f, camposModalidad)));
+      const filasRecibidas = filas.length;
+      // Compatibilidad puntual con BACK REBESA anterior a la reestructuración
+      // confirmada el 15/10/2026. Solo se activa con ambas señales del maestro viejo.
+      const rutaDeFila = f => normalizarCodigo(valorCampo(f, "ruta"));
+      const vendedorDeFila = f => normalizarTextoComparacion(valorCampoMultiple(f, ["vendedor", "vendedor_nombre", "nombre_vendedor", "vendedor nombre"]));
+      const aplicarReestructuracion = maestroHabitual &&
+        filas.some(f => rutaDeFila(f) === "12" && vendedorDeFila(f) === "VERA ALAN") &&
+        filas.some(f => rutaDeFila(f) === "36" && (!vendedorDeFila(f) || vendedorDeFila(f) === "#N/A"));
+      let filasRuta36Retiradas = 0, filasRuta12Corregidas = 0;
+      if (aplicarReestructuracion) {
+        const juliana = buscarVendedor(vendedores, {vendedor: "Juliana Lazarte"}).vendedor;
+        if (!juliana || !juliana.activo) throw Error("Juliana Lazarte no está disponible en Usuarios; no se guardaron cambios");
+        const vigentes = filas.filter(f => {
+          if (rutaDeFila(f) === "36") { filasRuta36Retiradas++; return false; }
+          return normalizarCodigo(valorCampo(f, "codigo_cliente")) !== "55777";
+        });
+        for (const f of vigentes) {
+          if (rutaDeFila(f) === "12" && vendedorDeFila(f) === "VERA ALAN") {
+            for (const k of Object.keys(f)) {
+              if (["vendedor", "vendedor_nombre", "nombre_vendedor", "vendedor nombre"].includes(k.trim().toLowerCase())) f[k] = "Juliana Lazarte";
+              if (["legajo", "legajo_vendedor", "vendedor_legajo", "legajo vendedor"].includes(k.trim().toLowerCase())) f[k] = null;
+            }
+            f.vendedor = "Juliana Lazarte";
+            filasRuta12Corregidas++;
+          }
+        }
+        filas.splice(0, filas.length, ...vigentes);
+      }
       const rutasConfiguradas = await db.query("SELECT id,nombre,tipo_atencion,vendedor_id FROM rutas");
       const tiposRuta = new Map(rutasConfiguradas.rows.map(r => [normalizarTextoComparacion(r.nombre), r]));
       const sincronizarPr = new Map();
@@ -1943,6 +1981,16 @@ router.post(
         }
       }
 
+      if (aplicarReestructuracion) {
+        // Retirar la asignación obsoleta, no los clientes redistribuidos.
+        await db.query(`UPDATE clientes_asignaciones a SET activo=false,updated_at=NOW()
+          FROM rutas r WHERE a.ruta_id=r.id AND TRIM(r.nombre)='36' AND a.activo=true`);
+        await db.query("UPDATE rutas SET activo=false,vendedor_id=NULL,updated_at=NOW() WHERE TRIM(nombre)='36'");
+        await db.query(`UPDATE clientes_asignaciones a SET activo=false,updated_at=NOW()
+          FROM clientes c WHERE a.cliente_id=c.id AND c.codigo_cliente='55777' AND c.deleted_at IS NULL AND a.activo=true`);
+        await db.query("UPDATE clientes SET activo=false,updated_at=NOW() WHERE codigo_cliente='55777' AND deleted_at IS NULL");
+      }
+
       /*
       =================================
       SUSPENDER CLIENTES AUSENTES
@@ -2081,11 +2129,12 @@ router.post(
       res.json({
         mensaje: "Importación finalizada",
         maestroHabitual,
+        reestructuracion: {aplicada: aplicarReestructuracion, filas_ruta_36_retiradas: filasRuta36Retiradas, filas_ruta_12_corregidas: filasRuta12Corregidas, cliente_baja: aplicarReestructuracion ? "55777" : null},
         asignacionesPrRetiradas,
         fichasPrSincronizadas,
 
-        filas:
-          filas.length,
+        filas: filasRecibidas,
+        filasProcesadas: filas.length,
 
         importados,
         actualizados,
