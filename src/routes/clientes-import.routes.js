@@ -982,6 +982,7 @@ router.post(
       const camposModalidad = ["Modalidad de atencion", "Modalidad de atención", "modalidad_de_atencion", "modalidad_de_atención", "modalidad", "modo", "tipo_modalidad", "tipo modalidad"];
       const maestroHabitual = !filas.some(f => limpiarTexto(valorCampoMultiple(f, camposModalidad)));
       const filasRecibidas = filas.length;
+      const numerosOriginales = new Map(filas.map((f,i)=>[f,i+2]));
       // Compatibilidad puntual con BACK REBESA anterior a la reestructuración
       // confirmada el 15/10/2026. Solo se activa con ambas señales del maestro viejo.
       const rutaDeFila = f => normalizarCodigo(valorCampo(f, "ruta"));
@@ -1012,6 +1013,59 @@ router.post(
       const rutasConfiguradas = await db.query("SELECT id,nombre,tipo_atencion,vendedor_id FROM rutas");
       const tiposRuta = new Map(rutasConfiguradas.rows.map(r => [normalizarTextoComparacion(r.nombre), r]));
       const sincronizarPr = new Map();
+      const sincronizarTele = new Map();
+      const codigosClientes = new Map();
+      const telePendientes = new Set();
+      let asignacionesTeleCreadas = 0, asignacionesTeleRetiradas = 0;
+      // Validar antes de escribir: si una fila de un cliente queda pendiente,
+      // se conserva toda su ficha y todas sus asignaciones de esta importación.
+      const pendientes = new Map();
+      const clientesBloqueados = new Set();
+      const rutasPendientes = new Set();
+      const frecuenciasCache = new Map();
+      const motivosFila = new Map();
+      const vendedoresPorRuta = new Map();
+      if (maestroHabitual) {
+        for (const f of filas) {
+          const codigo = normalizarCodigo(valorCampo(f,"codigo_cliente"));
+          const ruta = rutaDeFila(f);
+          const configuracion = tiposRuta.get(normalizarTextoComparacion(ruta));
+          const vendedor = buscarVendedor(vendedores,f).vendedor;
+          const frecuencia = limpiarTexto(valorCampo(f,"frecuencia"));
+          const fk = (frecuencia || "").toUpperCase();
+          if (!frecuenciasCache.has(fk)) frecuenciasCache.set(fk,await buscarFrecuencia(frecuencia));
+          let motivo = null;
+          if (!configuracion || !["PRESENCIAL","FACE_AND_CALL","FACE_AND_WHATSAPP","TELEVENTA","WHATSAPP"].includes(configuracion.tipo_atencion)) motivo="Ruta sin configuración reconocida: "+(ruta||"vacía");
+          else if (!vendedor || (configuracion.tipo_atencion === "PRESENCIAL" && !vendedor.activo)) motivo="Vendedor no resuelto o inactivo para calle: "+(vendedorDeFila(f)||"vacío");
+          else if (!frecuenciasCache.get(fk)) motivo="Frecuencia no encontrada: "+(frecuencia||"vacía");
+          if (motivo) {
+            if (codigo) {
+              pendientes.set(codigo,motivo);
+              // Una televenta pendiente no bloquea la nueva PR del mismo cliente.
+              if (!configuracion || configuracion.tipo_atencion === "PRESENCIAL") clientesBloqueados.add(codigo);
+              else telePendientes.add(codigo);
+            }
+            if (ruta) rutasPendientes.add(normalizarTextoComparacion(ruta));
+            motivosFila.set(f,motivo);
+          }
+          if (vendedor) {
+            if (!vendedoresPorRuta.has(ruta)) vendedoresPorRuta.set(ruta,new Set());
+            vendedoresPorRuta.get(ruta).add(vendedor.id);
+          }
+        }
+        for (const [ruta,ids] of vendedoresPorRuta) {
+          if (ids.size>1) {
+            rutasPendientes.add(normalizarTextoComparacion(ruta));
+            for (const f of filas.filter(f=>rutaDeFila(f)===ruta)) {
+              const motivo="Ruta con varios vendedores en el archivo: "+ruta;
+              pendientes.set(normalizarCodigo(valorCampo(f,"codigo_cliente")),motivo);
+              if (tiposRuta.get(normalizarTextoComparacion(ruta))?.tipo_atencion === "PRESENCIAL") clientesBloqueados.add(normalizarCodigo(valorCampo(f,"codigo_cliente")));
+              else telePendientes.add(normalizarCodigo(valorCampo(f,"codigo_cliente")));
+              motivosFila.set(f,motivo);
+            }
+          }
+        }
+      }
       let asignacionesPrRetiradas = 0;
       let fichasPrSincronizadas = 0;
 
@@ -1105,8 +1159,7 @@ router.post(
         const fila =
           filas[indice];
 
-        const numeroFila =
-          indice + 2;
+        const numeroFila = numerosOriginales.get(fila) || indice + 2;
 
         try {
           const codigoCliente =
@@ -1132,6 +1185,12 @@ router.post(
           codigosImportados.push(
             codigoCliente
           );
+
+          if (maestroHabitual && (motivosFila.has(fila) || clientesBloqueados.has(codigoCliente))) {
+            omitidos++;
+            errores.push({fila:numeroFila,codigo_cliente:codigoCliente,motivo:motivosFila.get(fila)||("Otra fila del mismo cliente está pendiente: "+pendientes.get(codigoCliente))});
+            continue;
+          }
 
           const cantidadFilasCliente =
             cantidadFilasPorCliente.get(
@@ -1331,7 +1390,7 @@ router.post(
 
           if (maestroHabitual) {
             if (!frecuenciaId) throw Error("Frecuencia no encontrada: " + frecuenciaExcel);
-            if (!vendedor || !vendedor.activo) throw Error("Vendedor no resuelto o inactivo: " + (vendedorResultado.valorBuscado || "vacío"));
+            if (!vendedor || (modalidad === "PR" && !vendedor.activo)) throw Error("Vendedor no resuelto o inactivo para calle: " + (vendedorResultado.valorBuscado || "vacío"));
           }
 
           if (vendedor) {
@@ -1759,8 +1818,15 @@ router.post(
           modalidad + ruta + vendedor + frecuencia.
           */
           if (maestroHabitual && clienteIdProcesado) {
+            codigosClientes.set(clienteIdProcesado,codigoCliente);
             if (!sincronizarPr.has(clienteIdProcesado)) sincronizarPr.set(clienteIdProcesado, []);
             if (modalidad === "PR") sincronizarPr.get(clienteIdProcesado).push({rutaId, vendedorId: vendedor.id, frecuenciaId});
+            if (!sincronizarTele.has(clienteIdProcesado)) sincronizarTele.set(clienteIdProcesado, []);
+            if (modalidad !== "PR") {
+              const tipo = tiposRuta.get(normalizarTextoComparacion(rutaResultado.nombre)).tipo_atencion;
+              const predeterminada = {FACE_AND_CALL:"FC",FACE_AND_WHATSAPP:"FW",TELEVENTA:"TA",WHATSAPP:"WA"}[tipo];
+              sincronizarTele.get(clienteIdProcesado).push({rutaId,vendedorId:vendedor.id,frecuenciaId,predeterminada});
+            }
           }
 
           if (
@@ -1788,19 +1854,8 @@ router.post(
           }
 
         } catch (errorFila) {
-          omitidos++;
+          throw new Error("Fallo procesando fila " + numeroFila + ": " + errorFila.message);
 
-          errores.push({
-            fila: numeroFila,
-            motivo:
-              errorFila.message
-          });
-
-          console.error(
-            "ERROR EN FILA",
-            numeroFila,
-            errorFila.message
-          );
         }
       }
 
@@ -1810,12 +1865,7 @@ router.post(
       =================================
       */
 
-      if (omitidos > 0) {
-        return res.status(422).json({error: "Importación cancelada; corregir las filas indicadas. No se guardaron cambios.", omitidos, errores, advertencias});
-      }
-      if ([...auditoriaRutas.values()].some(r => r.vendedoresIds.size !== 1 || r.clientesSinVendedor > 0)) {
-        return res.status(422).json({error: "Importación cancelada: hay rutas con vendedores ambiguos o sin resolver. No se guardaron cambios.", rutas: [...auditoriaRutas.values()].filter(r => r.vendedoresIds.size !== 1 || r.clientesSinVendedor > 0).map(r => ({ruta:r.ruta, vendedores:[...r.vendedoresExcel]}))});
-      }
+      if (pendientes.size) advertencias.push({motivo:"Se conservaron las asignaciones pendientes; las presenciales válidas se procesaron",clientes:[...pendientes.keys()]});
 
       const detalleRutas = [];
 
@@ -1830,7 +1880,8 @@ router.post(
           [...registro.vendedoresExcel];
 
         if (
-          vendedoresIds.length === 1
+          vendedoresIds.length === 1 &&
+          !rutasPendientes.has(normalizarTextoComparacion(registro.ruta))
         ) {
           const vendedorId =
             vendedoresIds[0];
@@ -1888,7 +1939,7 @@ router.post(
           });
 
         } else if (
-          vendedoresIds.length > 1
+          vendedoresIds.length > 1 || rutasPendientes.has(normalizarTextoComparacion(registro.ruta))
         ) {
           /*
           Nunca asignamos automáticamente una ruta
@@ -1981,6 +2032,49 @@ router.post(
         }
       }
 
+      if (maestroHabitual) {
+        for (const [clienteId, filasTele] of sincronizarTele) {
+          if (telePendientes.has(codigosClientes.get(clienteId))) continue;
+          // Solo administrar las asignaciones de rutas no presenciales.
+          // WA/TA de una ruta presencial puede ser otra atención: se conserva.
+          const actuales = await db.query(`SELECT a.id,a.modalidad,a.ruta_id,a.vendedor_id,a.frecuencia_id
+            FROM clientes_asignaciones a JOIN rutas r ON r.id=a.ruta_id
+            WHERE a.cliente_id=$1 AND a.activo=true AND a.modalidad<>'PR'
+              AND r.tipo_atencion IN ('FACE_AND_CALL','FACE_AND_WHATSAPP','TELEVENTA','WHATSAPP')
+            ORDER BY a.id FOR UPDATE OF a`,[clienteId]);
+          const deseadas = new Map();
+          for (const filaTele of filasTele) {
+            // Conservar las modalidades de la cartera existente. Para una nueva
+            // relación usar el tipo de atención configurado en su ruta.
+            const modalidades = [...new Set(actuales.rows.filter(a=>a.ruta_id===filaTele.rutaId).map(a=>a.modalidad))];
+            if (!modalidades.length) modalidades.push(filaTele.predeterminada);
+            for (const modalidadTele of modalidades) {
+              if (!modalidadTele) throw Error("Ruta de televentas sin modalidad configurada");
+              const clave = JSON.stringify([modalidadTele,filaTele.rutaId,filaTele.vendedorId,filaTele.frecuenciaId]);
+              deseadas.set(clave,{...filaTele,modalidad:modalidadTele});
+            }
+          }
+          const vistas = new Set(), retirar = [];
+          for (const a of actuales.rows) {
+            const k=JSON.stringify([a.modalidad,a.ruta_id,a.vendedor_id,a.frecuencia_id]);
+            if (!deseadas.has(k)||vistas.has(k)) retirar.push(a.id); else vistas.add(k);
+          }
+          if (retirar.length) {
+            await db.query("UPDATE clientes_asignaciones SET activo=false,updated_at=NOW() WHERE cliente_id=$1 AND id=ANY($2::uuid[])",[clienteId,retirar]);
+            asignacionesTeleRetiradas += retirar.length;
+          }
+          for (const a of deseadas.values()) {
+            const guardada=await guardarAsignacionCliente({clienteId,modalidad:a.modalidad,rutaId:a.rutaId,vendedorId:a.vendedorId,frecuenciaId:a.frecuenciaId});
+            if (guardada.creada) asignacionesTeleCreadas++;
+          }
+          // Si el cliente solo tiene atención remota, actualizar también su ficha.
+          if (!(sincronizarPr.get(clienteId)||[]).length && filasTele.length) {
+            const a=filasTele[0];
+            await db.query("UPDATE clientes SET ruta_id=$2,frecuencia_id=$3,vendedor_id=NULL,updated_at=NOW() WHERE id=$1 AND (ruta_id IS DISTINCT FROM $2::uuid OR frecuencia_id IS DISTINCT FROM $3::uuid OR vendedor_id IS NOT NULL)",[clienteId,a.rutaId,a.frecuenciaId]);
+          }
+        }
+      }
+
       if (aplicarReestructuracion) {
         // Retirar la asignación obsoleta, no los clientes redistribuidos.
         await db.query(`UPDATE clientes_asignaciones a SET activo=false,updated_at=NOW()
@@ -1998,7 +2092,7 @@ router.post(
       */
 
       if (
-        codigosImportados.length > 0
+        codigosImportados.length > 0 && omitidos === 0
       ) {
         const codigosUnicos = [
           ...new Set(
@@ -2127,10 +2221,14 @@ router.post(
         );
 
       res.json({
-        mensaje: "Importación finalizada",
+        mensaje: omitidos > 0 ? "Importación finalizada con pendientes; se conservaron sus datos anteriores" : "Importación finalizada",
         maestroHabitual,
+        clientesPendientes: [...pendientes].map(([codigo_cliente,motivo])=>({codigo_cliente,motivo})),
+        suspensionDeAusentesOmitida: omitidos > 0,
         reestructuracion: {aplicada: aplicarReestructuracion, filas_ruta_36_retiradas: filasRuta36Retiradas, filas_ruta_12_corregidas: filasRuta12Corregidas, cliente_baja: aplicarReestructuracion ? "55777" : null},
         asignacionesPrRetiradas,
+        asignacionesTeleCreadas,
+        asignacionesTeleRetiradas,
         fichasPrSincronizadas,
 
         filas: filasRecibidas,
