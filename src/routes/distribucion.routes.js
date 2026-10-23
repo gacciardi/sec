@@ -3,6 +3,7 @@ const express=require('express'),crypto=require('node:crypto'),multer=require('m
 const db=require('../config/database'),importador=require('./distribucion-importador');
 
 const router=express.Router(),upload=multer({storage:multer.memoryStorage(),limits:{fileSize:25*1024*1024}});
+router.use(require('./distribucion-ingreso-conductor')(db));
 
 const hash=t=>crypto.createHash('sha256').update(t).digest('hex');
 
@@ -113,6 +114,7 @@ router.use(async(req,res,next)=>{try{
 }catch(e){next(e);}});
 
 const admin=(req,res,next)=>['ADMIN','SUPERVISOR'].includes(req.actor.rol)?next():next(error('Acceso restringido',403));
+router.use(require('./distribucion-ingreso-conductor').vinculos(db));
 
 router.post('/logout',wrap(async(req,res)=>{await db.query('DELETE FROM distribucion.sesiones WHERE token_hash=$1',[hash((req.get('Authorization')||'').replace(/^Bearer /,''))]);res.json({ok:true});}));
 
