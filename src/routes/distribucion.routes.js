@@ -221,6 +221,29 @@ router.post('/reemplazos/:id/deshacer',admin,wrap(async(req,res)=>{
 
 router.get('/auditoria',admin,wrap(async(req,res)=>{const r=await db.query('SELECT a.id,a.fecha,a.accion,a.detalle,m.nombre,m.apellido FROM distribucion.auditoria a LEFT JOIN distribucion.miembros m ON m.id=a.actor_id AND m.empresa_id=a.empresa_id WHERE a.empresa_id=$1 ORDER BY a.id DESC LIMIT 500',[req.actor.empresa_id]);res.json(r.rows);}));
 
+// Biblioteca de fotografías: consultas siempre limitadas a la empresa autenticada.
+router.get('/biblioteca-fotos',admin,wrap(async(req,res)=>{
+ const fecha=req.query.fecha||null,conductor=req.query.conductor_id||null,cliente=String(req.query.cliente||'').trim();
+ if(fecha&&!/^\d{4}-\d{2}-\d{2}$/.test(fecha))throw error('Fecha inválida',400);
+ if(conductor&&!/^[0-9a-f-]{36}$/i.test(conductor))throw error('Conductor inválido',400);
+ if(cliente.length>80)throw error('Cliente inválido',400);
+ const r=await db.query(`SELECT f.id,f.fecha,f.visita_id,v.codigo_cliente,v.estado,v.reparto_id,
+   r.despacho,r.fecha AS fecha_reparto,m.id AS conductor_id,
+   m.nombre AS conductor_nombre,m.apellido AS conductor_apellido,
+   p.nombre_cliente
+   FROM distribucion.fotos f
+   JOIN distribucion.visitas v ON v.id=f.visita_id AND v.empresa_id=f.empresa_id
+   JOIN distribucion.repartos r ON r.id=v.reparto_id AND r.empresa_id=v.empresa_id
+   LEFT JOIN distribucion.miembros m ON m.id=r.conductor_id AND m.empresa_id=r.empresa_id
+   LEFT JOIN LATERAL(SELECT nombre_cliente FROM distribucion.pedidos
+     WHERE empresa_id=v.empresa_id AND reparto_id=v.reparto_id AND codigo_cliente=v.codigo_cliente LIMIT 1)p ON true
+   WHERE f.empresa_id=$1 AND ($2::date IS NULL OR (f.fecha AT TIME ZONE 'America/Argentina/Buenos_Aires')::date=$2::date)
+   AND ($3::uuid IS NULL OR r.conductor_id=$3::uuid)
+   AND ($4::text='' OR v.codigo_cliente ILIKE '%'||$4||'%' OR coalesce(p.nombre_cliente,'') ILIKE '%'||$4||'%')
+   ORDER BY f.fecha DESC LIMIT 200`,[req.actor.empresa_id,fecha,conductor,cliente]);
+ res.json(r.rows);
+}));
+
 router.use(require('./distribucion-recorridos')(db));
 
 router.use((e,req,res,next)=>{console.error('Distribución:',e.code||e.message);res.status(e.code==='23505'?409:e.status||500).json({error:e.code==='23505'?'Registro duplicado en esta empresa':e.status?e.message:'Error de Distribución; consultar el registro del servidor'});});
