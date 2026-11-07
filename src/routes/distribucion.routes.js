@@ -130,7 +130,13 @@ router.post('/gps-apk/iniciar',wrap(async(req,res)=>{
 
 router.post('/gps-apk/detener',wrap(async(req,res)=>{await db.query('UPDATE distribucion.gps_apk SET activo=false WHERE miembro_id=$1',[req.actor.id]);res.json({ok:true});}));
 
-router.get('/me',wrap(async(req,res)=>{res.json(req.actor);}));
+router.get('/me',wrap(async(req,res)=>{
+ const r=await db.query(`SELECT m.id,m.usuario_id,m.empresa_id,m.rol,m.legajo,m.nombre,m.apellido,e.codigo AS empresa
+ FROM distribucion.miembros m JOIN distribucion.empresas e ON e.id=m.empresa_id
+ WHERE m.id=$1 AND m.empresa_id=$2`,[req.actor.id,req.actor.empresa_id]);
+ if(!r.rowCount)throw error('Usuario no disponible',401);
+ res.json(r.rows[0]);
+}));
 
 router.get('/conductores',admin,wrap(async(req,res)=>{const r=await db.query("SELECT id,legajo,nombre,apellido,telefono,activo FROM distribucion.miembros WHERE empresa_id=$1 AND rol='CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(r.rows);}));
 
