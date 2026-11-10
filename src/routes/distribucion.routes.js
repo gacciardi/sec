@@ -158,7 +158,7 @@ router.post('/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
 
  if(!req.file)throw error('Seleccionar Excel');
  const fechaManual=String(req.body.fecha_entrega_real||'').trim();
- if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(fechaManual))throw error('Seleccioná una fecha real de entrega válida (AAAA-MM-DD)');
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(fechaManual))throw error('Seleccioná una fecha real de entrega válida (AAAA-MM-DD)');
  const parsed=new Date(fechaManual+'T00:00:00Z');
  if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==fechaManual)throw error('Fecha real de entrega inválida');
  const out=importador.pedidos(req.file.buffer,req.actor.empresa_id,{});
