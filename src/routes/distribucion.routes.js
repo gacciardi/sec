@@ -166,6 +166,59 @@ router.post('/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
 
 }));
 
+
+/* Asigno: fila 1 fecha, fila 2 encabezados, filas 3+ asignaciones.
+   El servidor revalida el archivo en cada solicitud: la vista previa nunca escribe. */
+router.post('/asigno/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
+ if(!req.file)throw error('Seleccionar archivo Asigno');
+ const fecha=String(req.body.fecha_entrega_real||'').trim();
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha)||new Date(fecha+'T00:00:00Z').toISOString().slice(0,10)!==fecha)throw error('Fecha real de entrega inválida');
+ const XLSX=require('xlsx');
+ const wb=XLSX.read(req.file.buffer,{type:'buffer'});
+ const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,defval:null});
+ if(!rows[1]||String(rows[1][5]||'').trim().toLowerCase()!=='despacho'||String(rows[1][4]||'').trim().toLowerCase()!=='int')throw error('Formato Asigno inválido: se esperan Int y Despacho en la fila 2');
+ const registros=[],duplicados=new Set(),vistos=new Set();
+ for(let i=2;i<rows.length;i++){
+  const r=rows[i],despacho=String(r[5]??'').trim();
+  if(!despacho)continue;
+  if(!/^\d+$/.test(despacho))continue;
+  if(vistos.has(despacho)){duplicados.add(despacho);continue;}vistos.add(despacho);
+  registros.push({despacho,interno:String(r[4]??'').trim(),legajo:String(r[9]??'').trim(),conductor:String(r[10]??'').trim(),fila:i+1});
+ }
+ if(!registros.length)throw error('No se encontraron despachos en Asigno');
+ const [repartos,conductores,vehiculos]=await Promise.all([
+  db.query('SELECT id,despacho,conductor_id,principal_id,semi_id FROM distribucion.repartos WHERE empresa_id=$1 AND fecha=$2',[req.actor.empresa_id,fecha]),
+  db.query("SELECT id,legajo FROM distribucion.miembros WHERE empresa_id=$1 AND rol='CONDUCTOR' AND activo=true",[req.actor.empresa_id]),
+  db.query("SELECT id,interno,tipo FROM distribucion.vehiculos WHERE empresa_id=$1 AND tipo IN('camion','tractor') AND activo=true",[req.actor.empresa_id])
+ ]);
+ const rm=new Map(repartos.rows.map(x=>[String(x.despacho),x]));
+ const cm=new Map(conductores.rows.map(x=>[String(x.legajo).trim(),x]));
+ const vm=new Map(vehiculos.rows.map(x=>[String(x.interno).trim(),x]));
+ const detalle=registros.map(x=>{
+  const reparto=rm.get(x.despacho),conductor=cm.get(x.legajo),vehiculo=vm.get(x.interno),motivos=[];
+  if(duplicados.has(x.despacho))motivos.push('Despacho repetido en Asigno');
+  if(!reparto)motivos.push('Sin pedidos importados para este despacho');
+  if(!conductor)motivos.push('Legajo no encontrado en Conductores');
+  if(!vehiculo)motivos.push('Interno no encontrado en Vehículos');
+  if(vehiculo?.tipo==='tractor')motivos.push('Tractor: requiere asignar semirremolque manualmente');
+  if(reparto&&(reparto.conductor_id||reparto.principal_id||reparto.semi_id))motivos.push('Ya tiene asignación: no se sobrescribe');
+  return {...x,estado:motivos.length?'pendiente':'asignable',motivos,conductor_id:conductor?.id,principal_id:vehiculo?.id,reparto_id:reparto?.id};
+ });
+ const enAsigno=new Set(registros.map(x=>x.despacho));
+ for(const r of repartos.rows)if(!enAsigno.has(String(r.despacho)))detalle.push({despacho:String(r.despacho),interno:'',legajo:'',conductor:'',estado:'pendiente',motivos:['Despacho de Pedidos ausente en Asigno']});
+ const asignables=detalle.filter(x=>x.estado==='asignable');
+ if(req.body.solo_validar==='1')return res.json({fecha,asignables:asignables.length,pendientes:detalle.length-asignables.length,detalle:detalle.map(({conductor_id,principal_id,reparto_id,...x})=>x)});
+ let aplicados=0;
+ await transaction(async c=>{
+  for(const x of asignables){
+   const updated=await c.query('UPDATE distribucion.repartos SET conductor_id=$3,principal_id=$4 WHERE id=$1 AND empresa_id=$2 AND conductor_id IS NULL AND principal_id IS NULL AND semi_id IS NULL',[x.reparto_id,req.actor.empresa_id,x.conductor_id,x.principal_id]);
+   aplicados+=updated.rowCount;
+  }
+  await audit(c,req.actor,'IMPORTACION_ASIGNO',{fecha,aplicados,pendientes:detalle.length-asignables.length});
+ });
+ res.json({fecha,aplicados,pendientes:detalle.length-aplicados,detalle:detalle.map(({conductor_id,principal_id,reparto_id,...x})=>x)});
+}));
+
 router.get('/vehiculos',admin,wrap(async(req,res)=>{const r=await db.query('SELECT id,interno,patente,tipo,activo FROM distribucion.vehiculos WHERE empresa_id=$1 ORDER BY interno',[req.actor.empresa_id]);res.json(r.rows);}));
 
 router.post('/vehiculos/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{if(!req.file)throw error('Seleccionar tabla');const rows=importador.vehiculos(req.file.buffer,req.actor.empresa_id);await transaction(async c=>{for(const v of rows)await c.query(`INSERT INTO distribucion.vehiculos(empresa_id,interno,patente,tipo) VALUES($1,$2,$3,$4) ON CONFLICT(empresa_id,interno) DO UPDATE SET patente=excluded.patente,tipo=excluded.tipo`,[req.actor.empresa_id,v.interno,v.patente,v.tipo]);await audit(c,req.actor,'IMPORTACION_VEHICULOS',{cantidad:rows.length});});res.json({importados:rows.length});}));
