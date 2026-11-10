@@ -148,6 +148,49 @@ router.get('/repartos',wrap(async(req,res)=>{const r=await db.query(`SELECT r.*,
 
 router.get('/pedidos',wrap(async(req,res)=>{const r=await db.query(`SELECT p.*,r.despacho,r.conductor_nombre,r.conductor_id,c.latitud,c.longitud,c.direccion,c.radio_geocerca FROM distribucion.pedidos p JOIN distribucion.repartos r ON r.id=p.reparto_id AND r.empresa_id=p.empresa_id LEFT JOIN distribucion.clientes dc ON dc.empresa_id=p.empresa_id AND dc.codigo=p.codigo_cliente LEFT JOIN public.clientes c ON c.id=dc.cliente_id AND c.deleted_at IS NULL WHERE p.empresa_id=$1 AND (($3::uuid IS NOT NULL AND p.fecha=(now() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date) OR ($3::uuid IS NULL AND ($2::date IS NULL OR p.fecha=$2::date))) AND ($3::uuid IS NULL OR r.conductor_id=$3::uuid) ORDER BY p.fecha DESC,r.despacho,p.codigo_cliente`,[req.actor.empresa_id,req.query.fecha||null,req.actor.rol==='CONDUCTOR'?req.actor.id:null]);res.json(r.rows);}));
 
+// Importador de horarios de recepción. Validación previa obligatoria desde la interfaz.
+router.post('/importar-horarios',admin,upload.single('archivo'),wrap(async(req,res)=>{
+ if(!req.file)throw error('Seleccioná un Excel o CSV');
+ const XLSX=require('xlsx');
+ let workbook;try{workbook=XLSX.read(req.file.buffer,{type:'buffer'});}catch{throw error('No se pudo leer el archivo');}
+ const sheet=workbook.Sheets[workbook.SheetNames[0]];
+ if(!sheet)throw error('Archivo sin hojas');
+ const filas=XLSX.utils.sheet_to_json(sheet,{defval:'',raw:false});
+ if(!filas.length)throw error('Archivo sin clientes');
+ if(filas.length>15000)throw error('Máximo 15.000 filas por importación');
+ const normalizar=x=>String(x).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+ const hh=x=>{const m=String(x||'').trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);return m?m[1].padStart(2,'0')+':'+m[2]:null;};
+ const dias={DOMINGO:0,LUNES:1,MARTES:2,MIERCOLES:3,JUEVES:4,VIERNES:5,SABADO:6};
+ const cambios=[],errores=[],vistos=new Set();
+ for(let i=0;i<filas.length;i++){
+  const f=Object.fromEntries(Object.entries(filas[i]).map(([k,v])=>[normalizar(k),v]));
+  const codigo=String(f.CLIENTE||f.CODCLI||f.CODIGOCLIENTE||'').trim();
+  const horario=String(f.HORARIO||f.HORARIORECEPCION||'').trim().replace(/[–—]/g,'-');
+  const diaTexto=normalizar(f.DIA||f.DIASEMANA||'TODOS');
+  const ds=diaTexto==='TODOS'||diaTexto==='TODOSLOSDIAS'?[0,1,2,3,4,5,6]:dias[diaTexto]!==undefined?[dias[diaTexto]]:[];
+  const partes=horario.split(/\s*(?:\/|;)\s*/).filter(Boolean);
+  const turnos=partes.map(p=>{const m=p.match(/^\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*$/);return m?[hh(m[1]),hh(m[2])]:[];});
+  const descarga=String(f.DESCARGAMIN||f.MINUTOSDESCARGA||'').trim();
+  const minutos=descarga===''?15:Number(descarga);
+  if(!codigo||codigo.length>100||!ds.length||!turnos.length||turnos.length>2||turnos.some(t=>t.length!==2||!t[0]||!t[1]||t[0]>=t[1])||(turnos[1]&&turnos[1][0]<turnos[0][1])||!Number.isInteger(minutos)||minutos<0||minutos>480){
+   errores.push({fila:i+2,cliente:codigo,detalle:'Cliente, día, horario o descarga inválidos'});continue;
+  }
+  for(const dia of ds){const key=codigo+'|'+dia;if(vistos.has(key)){errores.push({fila:i+2,cliente:codigo,detalle:'Cliente y día duplicados en el archivo'});continue;}vistos.add(key);
+   cambios.push({codigo,dia,turnos,minutos});
+  }
+ }
+ if(errores.length)return res.status(422).json({error:'Archivo sin importar: corregí las filas indicadas',filas:errores.slice(0,100),total_errores:errores.length});
+ if(req.body.solo_validar==='1')return res.json({validado:true,filas:filas.length,clientes:new Set(cambios.map(x=>x.codigo)).size,horarios:cambios.length});
+ if(req.body.confirmar!=='SI')throw error('Primero validá y confirmá la importación');
+ await transaction(async c=>{
+  for(const x of cambios){
+   await c.query(`INSERT INTO distribucion.horarios_recepcion(empresa_id,codigo_cliente,dia_semana,apertura_1,cierre_1,apertura_2,cierre_2,minutos_descarga) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(empresa_id,codigo_cliente,dia_semana) DO UPDATE SET apertura_1=EXCLUDED.apertura_1,cierre_1=EXCLUDED.cierre_1,apertura_2=EXCLUDED.apertura_2,cierre_2=EXCLUDED.cierre_2,minutos_descarga=EXCLUDED.minutos_descarga,actualizado_en=now()`,[req.actor.empresa_id,x.codigo,x.dia,x.turnos[0][0],x.turnos[0][1],x.turnos[1]?.[0]||null,x.turnos[1]?.[1]||null,x.minutos]);
+  }
+  await audit(c,req.actor,'IMPORTAR_HORARIOS',{filas:filas.length,clientes:new Set(cambios.map(x=>x.codigo)).size});
+ });
+ res.json({ok:true,clientes:new Set(cambios.map(x=>x.codigo)).size,horarios:cambios.length});
+}));
+
 router.post('/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
 
  if(!req.file)throw error('Seleccionar Excel');
