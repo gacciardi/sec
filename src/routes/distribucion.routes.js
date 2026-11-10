@@ -150,11 +150,19 @@ router.get('/pedidos',wrap(async(req,res)=>{const r=await db.query(`SELECT p.*,r
 
 router.post('/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
 
- if(!req.file)throw error('Seleccionar Excel');const out=importador.pedidos(req.file.buffer,req.actor.empresa_id,{});if(out.errores.length)return res.status(422).json({error:'Archivo sin importar',filas:out.errores});
+ if(!req.file)throw error('Seleccionar Excel');
+ const fechaManual=String(req.body.fecha_entrega_real||'').trim();
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(fechaManual))throw error('Seleccioná la fecha real de entrega (AAAA-MM-DD)');
+ const parsed=new Date(fechaManual+'T00:00:00Z');
+ if(!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==fechaManual)throw error('Fecha real de entrega inválida');
+ const out=importador.pedidos(req.file.buffer,req.actor.empresa_id,{});
+ if(out.errores.length)return res.status(422).json({error:'Archivo sin importar',filas:out.errores});
+ for(const p of out.pedidos)p.fecha=fechaManual;
+ if(req.body.solo_validar==='1')return res.json({validado:true,pedidos:out.pedidos.length,despachos:new Set(out.pedidos.map(p=>p.despacho||'SIN_DESPACHO')).size,fecha_entrega_real:fechaManual});
 
  const grouped=new Map();for(const p of out.pedidos){const k=p.fecha+'|'+(p.despacho||'SIN_DESPACHO');const g=grouped.get(k)||new Set();if(p.conductor)g.add(p.conductor);grouped.set(k,g);}if([...grouped.values()].some(v=>v.size>1))throw error('Un despacho tiene varios conductores: revisar el archivo');
 
- await transaction(async c=>{for(const p of out.pedidos){const reparto=await c.query(`INSERT INTO distribucion.repartos(empresa_id,fecha,despacho,conductor_nombre) VALUES($1,$2,$3,$4) ON CONFLICT(empresa_id,fecha,despacho) DO UPDATE SET conductor_nombre=excluded.conductor_nombre RETURNING id`,[req.actor.empresa_id,p.fecha,p.despacho||'SIN_DESPACHO',p.conductor]);await c.query(`INSERT INTO distribucion.pedidos(empresa_id,reparto_id,fecha,numero,codigo_cliente,nombre_cliente,cantidad,importe) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(empresa_id,fecha,numero) DO UPDATE SET reparto_id=excluded.reparto_id,codigo_cliente=excluded.codigo_cliente,nombre_cliente=excluded.nombre_cliente,cantidad=excluded.cantidad,importe=excluded.importe`,[req.actor.empresa_id,reparto.rows[0].id,p.fecha,p.pedido,p.codigo,p.cliente,p.cantidad,p.importe]);}await audit(c,req.actor,'IMPORTACION_PEDIDOS',{cantidad:out.pedidos.length});});res.json({importados:out.pedidos.length});
+ await transaction(async c=>{for(const p of out.pedidos){const reparto=await c.query(`INSERT INTO distribucion.repartos(empresa_id,fecha,despacho,conductor_nombre) VALUES($1,$2,$3,$4) ON CONFLICT(empresa_id,fecha,despacho) DO UPDATE SET conductor_nombre=excluded.conductor_nombre RETURNING id`,[req.actor.empresa_id,p.fecha,p.despacho||'SIN_DESPACHO',p.conductor]);await c.query(`INSERT INTO distribucion.pedidos(empresa_id,reparto_id,fecha,numero,codigo_cliente,nombre_cliente,cantidad,importe) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(empresa_id,fecha,numero) DO UPDATE SET reparto_id=excluded.reparto_id,codigo_cliente=excluded.codigo_cliente,nombre_cliente=excluded.nombre_cliente,cantidad=excluded.cantidad,importe=excluded.importe`,[req.actor.empresa_id,reparto.rows[0].id,p.fecha,p.pedido,p.codigo,p.cliente,p.cantidad,p.importe]);}await audit(c,req.actor,'IMPORTACION_PEDIDOS',{cantidad:out.pedidos.length,fecha_entrega_real:fechaManual});});res.json({importados:out.pedidos.length});
 
 }));
 
