@@ -132,6 +132,32 @@ router.post('/gps-apk/detener',wrap(async(req,res)=>{await db.query('UPDATE dist
 
 router.get('/me',wrap(async(req,res)=>{res.json(req.actor);}));
 
+const soloAdmin=(req,res,next)=>req.actor.rol==='ADMIN'?next():next(error('Solo el administrador puede gestionar usuarios',403));
+
+router.get('/usuarios',soloAdmin,wrap(async(req,res)=>{
+ const r=await db.query("SELECT id,legajo,nombre,apellido,rol,activo FROM distribucion.miembros WHERE empresa_id=$1 AND rol<>'CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(r.rows);
+}));
+
+router.post('/usuarios',soloAdmin,wrap(async(req,res)=>{
+ const b=req.body||{};if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(b.rol))throw error('Perfil inválido');
+ const r=await transaction(async c=>{const m=await alta(c,req.actor.empresa_id,b,b.rol);await audit(c,req.actor,'ALTA_USUARIO',{id:m.id,legajo:m.legajo,rol:m.rol});return m;});
+ res.status(201).json(r);
+}));
+
+router.put('/usuarios/:id',soloAdmin,wrap(async(req,res)=>{
+ const b=req.body||{};if(typeof b.activo!=='boolean')throw error('Estado inválido');
+ if(req.params.id===String(req.actor.id)&&!b.activo)throw error('No podés desactivar tu propio acceso');
+ const r=await transaction(async c=>{
+  const old=await c.query("SELECT id,usuario_id,rol FROM distribucion.miembros WHERE id=$1 AND empresa_id=$2 AND rol<>'CONDUCTOR' FOR UPDATE",[req.params.id,req.actor.empresa_id]);
+  if(!old.rowCount)throw error('Usuario no encontrado',404);
+  if(old.rows[0].rol==='ADMIN'&&!b.activo){const admins=await c.query("SELECT count(*)::int AS total FROM distribucion.miembros WHERE empresa_id=$1 AND rol='ADMIN' AND activo=true",[req.actor.empresa_id]);if(admins.rows[0].total<=1)throw error('Debe permanecer al menos un administrador activo');}
+  const u=await c.query("UPDATE distribucion.miembros SET activo=$3 WHERE id=$1 AND empresa_id=$2 RETURNING id,legajo,nombre,apellido,rol,activo",[req.params.id,req.actor.empresa_id,b.activo]);
+  await c.query("UPDATE public.usuarios SET activo=$2,updated_at=now() WHERE id=$1",[old.rows[0].usuario_id,b.activo]);
+  if(!b.activo)await c.query("DELETE FROM distribucion.sesiones WHERE miembro_id=$1",[req.params.id]);
+  await audit(c,req.actor,'ESTADO_USUARIO',{id:req.params.id,activo:b.activo});return u.rows[0];
+ });res.json(r);
+}));
+
 router.get('/conductores',admin,wrap(async(req,res)=>{const r=await db.query("SELECT id,legajo,nombre,apellido,telefono,activo FROM distribucion.miembros WHERE empresa_id=$1 AND rol='CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(r.rows);}));
 
 router.post('/conductores',admin,wrap(async(req,res)=>{const r=await transaction(async c=>{const m=await alta(c,req.actor.empresa_id,req.body,'CONDUCTOR');await audit(c,req.actor,'ALTA_CONDUCTOR',{id:m.id,legajo:m.legajo});return m;});res.status(201).json(r);}));
