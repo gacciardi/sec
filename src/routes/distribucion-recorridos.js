@@ -23,6 +23,7 @@ module.exports=function(db){
  router.post('/visitas',wrap(async(req,res)=>{const b=req.body;if(!['VISITADO','ENTREGADO','CERRADO','INCIDENCIA'].includes(b.estado)||typeof b.codigo_cliente!=='string'||String(b.observacion||'').length>3000)return res.status(400).json({error:'Resultado inválido'});const c=await db.connect();try{await c.query('BEGIN');const r=await c.query('SELECT id FROM distribucion.repartos WHERE id=$1 AND empresa_id=$2 AND ($3::uuid IS NULL OR conductor_id=$3::uuid) FOR UPDATE',[b.reparto_id,req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null]);if(!r.rowCount)throw Object.assign(Error('Reparto no disponible'),{status:403});const p=await c.query('SELECT 1 FROM distribucion.pedidos WHERE reparto_id=$1 AND empresa_id=$2 AND codigo_cliente=$3',[b.reparto_id,req.actor.empresa_id,b.codigo_cliente]);if(!p.rowCount)throw Object.assign(Error('Cliente no pertenece al reparto'),{status:400});const v=await c.query(`INSERT INTO distribucion.visitas(empresa_id,reparto_id,codigo_cliente,estado,observacion) VALUES($1,$2,$3,$4,$5) ON CONFLICT(empresa_id,reparto_id,codigo_cliente) DO UPDATE SET estado=excluded.estado,observacion=excluded.observacion,actualizado=now() RETURNING *`,[req.actor.empresa_id,b.reparto_id,b.codigo_cliente,b.estado,b.observacion||'']);await c.query('INSERT INTO distribucion.auditoria(empresa_id,actor_id,accion,detalle) VALUES($1,$2,$3,$4)',[req.actor.empresa_id,req.actor.id,'RESULTADO_ENTREGA',JSON.stringify({visita_id:v.rows[0].id,estado:b.estado})]);await c.query('COMMIT');res.json(v.rows[0]);}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}));
  const photo=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024}});
  // Fotos del recorrido: asociación opcional por geocerca, sin alterar el estado de entrega.
+ router.get('/mapa-google/configuracion',wrap(async(req,res)=>{res.set('Cache-Control','no-store').json({api_key:process.env.GOOGLE_MAPS_BROWSER_API_KEY||null});}));
  // Routes API: orden por red vial y tráfico. La clave permanece exclusivamente en Render.
  router.post('/rutas-google/sugerir',wrap(async(req,res)=>{
   if(req.actor.rol!=='CONDUCTOR')return res.status(403).json({error:'Solo conductores'});
@@ -36,19 +37,19 @@ module.exports=function(db){
   const permitido=new Set(permitidos.rows.map(p=>p.reparto_id+'|'+p.codigo_cliente));
   if(puntos.some(p=>!permitido.has(p.reparto_id+'|'+p.codigo_cliente)))return res.status(403).json({error:'Hay clientes no asignados al conductor'});
   const wp=p=>({location:{latLng:{latitude:Number(p.latitud),longitude:Number(p.longitud)}}});
-  let actual=origen,restantes=[...puntos],orden=[],distanciaMetros=0,duracionSegundos=0;
+  let actual=origen,restantes=[...puntos],orden=[],distanciaMetros=0,duracionSegundos=0,polilineas=[];
   while(restantes.length){
    // Máximo 25 puntos intermedios; se deja el último como destino.
    const grupo=restantes.splice(0,25),destino=grupo[grupo.length-1],intermedios=grupo.slice(0,-1);
    const payload={origin:wp(actual),destination:wp(destino),intermediates:intermedios.map(wp),travelMode:'DRIVE',routingPreference:'TRAFFIC_AWARE',computeAlternativeRoutes:false,languageCode:'es-AR',units:'METRIC'};
    if(intermedios.length>1)payload.optimizeWaypointOrder=true;
-   const response=await fetch('https://routes.googleapis.com/directions/v2:computeRoutes',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':key,'X-Goog-FieldMask':'routes.duration,routes.distanceMeters,routes.optimizedIntermediateWaypointIndex'},body:JSON.stringify(payload)});
+   const response=await fetch('https://routes.googleapis.com/directions/v2:computeRoutes',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':key,'X-Goog-FieldMask':'routes.duration,routes.distanceMeters,routes.optimizedIntermediateWaypointIndex,routes.polyline.encodedPolyline'},body:JSON.stringify(payload)});
    const body=await response.json().catch(()=>({}));
    if(!response.ok||!body.routes?.[0])return res.status(502).json({error:'Google Routes: '+(body.error?.message||'No se pudo calcular el recorrido')});
    const ruta=body.routes[0],indices=ruta.optimizedIntermediateWaypointIndex||intermedios.map((_,i)=>i);
-   orden.push(...indices.map(i=>intermedios[i]),destino);distanciaMetros+=Number(ruta.distanceMeters)||0;duracionSegundos+=Number(String(ruta.duration||'0s').replace('s',''))||0;actual=destino;
+   orden.push(...indices.map(i=>intermedios[i]),destino);distanciaMetros+=Number(ruta.distanceMeters)||0;duracionSegundos+=Number(String(ruta.duration||'0s').replace('s',''))||0;if(ruta.polyline?.encodedPolyline)polilineas.push(ruta.polyline.encodedPolyline);actual=destino;
   }
-  res.json({orden:orden.map(p=>({reparto_id:p.reparto_id,codigo_cliente:p.codigo_cliente})),distancia_metros:distanciaMetros,duracion_segundos:duracionSegundos,metodo:'GOOGLE_ROUTES_TRAFFIC_AWARE',nota:puntos.length>25?'Ruta calculada por tramos; el orden global no está optimizado.':'Tránsito considerado al estimar el recorrido.'});
+  res.json({orden:orden.map(p=>({reparto_id:p.reparto_id,codigo_cliente:p.codigo_cliente})),distancia_metros:distanciaMetros,duracion_segundos:duracionSegundos,polilineas,metodo:'GOOGLE_ROUTES_TRAFFIC_AWARE',nota:puntos.length>25?'Ruta calculada por tramos; el orden global no está optimizado.':'Tránsito considerado al estimar el recorrido.'});
  }));
  router.get('/fotos-recorrido/candidatos',wrap(async(req,res)=>{
   if(req.actor.rol!=='CONDUCTOR')return res.status(403).json({error:'Solo conductores'});
