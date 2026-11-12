@@ -1,6 +1,7 @@
 const express=require('express'),multer=require('multer');
 function distancia(a,b,c,d){const r=x=>x*Math.PI/180;const t=Math.sin(r(c-a)/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(r(d-b)/2)**2;return 6371000*2*Math.atan2(Math.sqrt(t),Math.sqrt(Math.max(0,1-t)));}
 module.exports=function(db){
+ const photo=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024}});
  const router=express.Router(),wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next),admin=(req,res,next)=>req.actor.rol==='CONDUCTOR'?res.status(403).json({error:'Acceso restringido'}):next();
  router.post('/gps',wrap(async(req,res)=>{
   if(req.actor.rol!=='CONDUCTOR')return res.status(403).json({error:'Ingresar como conductor'});
