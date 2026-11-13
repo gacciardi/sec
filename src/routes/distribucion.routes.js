@@ -351,6 +351,7 @@ router.post('/reemplazos/:id/deshacer',admin,wrap(async(req,res)=>{
 
 router.get('/auditoria',admin,wrap(async(req,res)=>{const r=await db.query('SELECT a.id,a.fecha,a.accion,a.detalle,m.nombre,m.apellido FROM distribucion.auditoria a LEFT JOIN distribucion.miembros m ON m.id=a.actor_id AND m.empresa_id=a.empresa_id WHERE a.empresa_id=$1 ORDER BY a.id DESC LIMIT 500',[req.actor.empresa_id]);res.json(r.rows);}));
 
+router.use(require('./distribucion-rendicion')(db));
 router.use(require('./distribucion-recorridos')(db));
 
 router.use((e,req,res,next)=>{console.error('Distribución:',e.code||e.message);res.status(e.code==='23505'?409:e.status||500).json({error:e.code==='23505'?'Registro duplicado en esta empresa':e.status?e.message:'Error de Distribución; consultar el registro del servidor'});});
