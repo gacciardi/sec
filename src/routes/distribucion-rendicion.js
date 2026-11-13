@@ -7,7 +7,7 @@ module.exports=function(db){
  const office=(req,res,next)=>req.actor.rol==='ADMIN'||req.actor.rol==='SUPERVISOR'?next():next(fail('Acceso restringido',403));
  const administrator=(req,res,next)=>req.actor.rol==='ADMIN'?next():next(fail('Solo administradores',403));
  const config={
-  motivos:{table:'motivos_rechazo',fields:['codigo','nombre','area_responsable','orden'],classes:['COMERCIAL','DISTRIBUCION','CLIENTE','OTROS']},
+  motivos:{table:'motivos_rechazo',fields:['codigo','nombre','area_responsable','orden'],classes:['COMERCIAL','DISTRIBUCION','BODEGA','CLIENTE','OTROS']},
   medios:{table:'medios_cobranza',fields:['codigo','nombre','clasificacion','orden'],classes:['EFECTIVO','DIGITAL','CHEQUE','OTRO']}
  };
  const spec=req=>{const c=config[req.params.tipo];if(!c)throw fail('Catálogo desconocido',404);return c;};
