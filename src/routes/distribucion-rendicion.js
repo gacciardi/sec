@@ -55,6 +55,8 @@ module.exports=function(db){
    await c.query('BEGIN');
    const rr=await c.query('SELECT id FROM distribucion.repartos WHERE id=$1 AND empresa_id=$2 AND ($3::uuid IS NULL OR conductor_id=$3::uuid) FOR UPDATE',[b.reparto_id,req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null]);
    if(!rr.rowCount)throw fail('Reparto no autorizado',403);
+   const cierre=await c.query('SELECT cc.id FROM distribucion.cierres_caja_conductor cc JOIN distribucion.repartos rp ON rp.conductor_id=cc.conductor_id AND rp.fecha=cc.fecha AND rp.empresa_id=cc.empresa_id WHERE rp.id=$1 AND cc.empresa_id=$2 LIMIT 1',[b.reparto_id,req.actor.empresa_id]);
+   if(cierre.rowCount)throw fail('La caja del conductor está cerrada. Solicitá revisión a supervisión antes de modificar la rendición.',409);
    const p=await c.query('SELECT COALESCE(SUM(importe),0)::numeric AS total,COUNT(*)::int AS cantidad FROM distribucion.pedidos WHERE empresa_id=$1 AND reparto_id=$2 AND codigo_cliente=$3',[req.actor.empresa_id,b.reparto_id,String(b.codigo_cliente)]);
    if(!p.rows[0].cantidad)throw fail('Cliente sin pedidos en el reparto',404);
    const total=Number(p.rows[0].total),centavos=n=>Math.round(Number(n)*100);
