@@ -21,9 +21,9 @@ module.exports=function(db){
   res.status(201).json(r.rows[0]);
  }));
  router.put('/rendicion/catalogos/:tipo/:id',administrator,wrap(async(req,res)=>{
-  const c=spec(req),b=req.body||{},nombre=String(b.nombre||'').trim(),clase=String(b[c.fields[2]]||'').trim().toUpperCase(),orden=Number(b.orden);
-  if(!nombre||nombre.length>150||!c.classes.includes(clase)||!Number.isInteger(orden)||orden<0||orden>9999||typeof b.activo!=='boolean')throw fail('Datos de catálogo inválidos');
-  const r=await db.query('UPDATE distribucion.'+c.table+' SET nombre=$3,'+c.fields[2]+'=$4,orden=$5,activo=$6,actualizado_en=now() WHERE empresa_id=$1 AND id=$2 RETURNING *',[req.actor.empresa_id,req.params.id,nombre,clase,orden,b.activo]);
+  const c=spec(req),b=req.body||{},codigo=String(b.codigo||'').trim().toUpperCase(),nombre=String(b.nombre||'').trim(),clase=String(b[c.fields[2]]||'').trim().toUpperCase(),orden=Number(b.orden);
+  if(!/^[A-Z0-9_]{2,30}$/.test(codigo)||!nombre||nombre.length>150||!c.classes.includes(clase)||!Number.isInteger(orden)||orden<0||orden>9999||typeof b.activo!=='boolean')throw fail('Datos de catálogo inválidos');
+  const r=await db.query('UPDATE distribucion.'+c.table+' SET codigo=$3,nombre=$4,'+c.fields[2]+'=$5,orden=$6,activo=$7,actualizado_en=now() WHERE empresa_id=$1 AND id=$2 RETURNING *',[req.actor.empresa_id,req.params.id,codigo,nombre,clase,orden,b.activo]);
   if(!r.rowCount)throw fail('Registro no encontrado',404);res.json(r.rows[0]);
  }));
  // Estado económico persistido, limitado por empresa y reparto asignado.
