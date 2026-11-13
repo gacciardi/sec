@@ -84,5 +84,38 @@ module.exports=function(db){
    await c.query('COMMIT');res.json(v.rows[0]);
   }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
  }));
+
+ // Cierre diario: el conductor declara efectivo físico. La diferencia se calcula en servidor.
+ router.get('/rendicion/cierre-caja',wrap(async(req,res)=>{
+  if(!['CONDUCTOR','ADMIN','SUPERVISOR'].includes(req.actor.rol))throw fail('Acceso restringido',403);
+  const fecha=String(req.query.fecha||'');
+  if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(fecha))throw fail('Fecha inválida');
+  const conductor=req.actor.rol==='CONDUCTOR'?req.actor.id:req.query.conductor_id;
+  if(!conductor)throw fail('Indicar conductor');
+  const r=await db.query('SELECT * FROM distribucion.cierres_caja_conductor WHERE empresa_id=$1 AND conductor_id=$2 AND fecha=$3::date',[req.actor.empresa_id,conductor,fecha]);
+  res.json(r.rows[0]||null);
+ }));
+ router.post('/rendicion/cierre-caja',wrap(async(req,res)=>{
+  if(req.actor.rol!=='CONDUCTOR')throw fail('Solo el conductor puede cerrar su caja',403);
+  const b=req.body||{},fecha=String(b.fecha||''),declarado=Number(b.efectivo_declarado);
+  if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(fecha)||!Number.isFinite(declarado)||declarado<0||!Number.isInteger(declarado*100+1e-7)||String(b.observacion||'').length>1000)throw fail('Datos del cierre inválidos');
+  const c=await db.connect();
+  try{
+   await c.query('BEGIN');
+   const existe=await c.query('SELECT id FROM distribucion.cierres_caja_conductor WHERE empresa_id=$1 AND conductor_id=$2 AND fecha=$3::date FOR UPDATE',[req.actor.empresa_id,req.actor.id,fecha]);
+   if(existe.rowCount)throw fail('La caja de esta fecha ya está cerrada. Consultá con supervisión.',409);
+   const q=await c.query(`SELECT COALESCE(SUM(rc.importe),0)::numeric AS efectivo
+    FROM distribucion.rendicion_cobros rc
+    JOIN distribucion.rendicion_entregas re ON re.id=rc.rendicion_entrega_id AND re.empresa_id=rc.empresa_id
+    JOIN distribucion.repartos rp ON rp.id=re.reparto_id AND rp.empresa_id=re.empresa_id
+    WHERE rc.empresa_id=$1 AND rp.conductor_id=$2 AND rp.fecha=$3::date
+    AND rc.medio_clasificacion='EFECTIVO'`,[req.actor.empresa_id,req.actor.id,fecha]);
+   const sistema=Number(q.rows[0].efectivo);
+   const dif=Math.round(declarado*100-sistema*100)/100;
+   const insert=await c.query('INSERT INTO distribucion.cierres_caja_conductor(empresa_id,conductor_id,fecha,efectivo_sistema,efectivo_declarado,diferencia,observacion) VALUES($1,$2,$3::date,$4,$5,$6,$7) RETURNING *',[req.actor.empresa_id,req.actor.id,fecha,sistema,declarado,dif,String(b.observacion||'').trim()]);
+   await c.query('INSERT INTO distribucion.auditoria(empresa_id,actor_id,accion,detalle) VALUES($1,$2,$3,$4)',[req.actor.empresa_id,req.actor.id,'CIERRE_CAJA_CONDUCTOR',JSON.stringify({fecha,efectivo_sistema:sistema,efectivo_declarado:declarado,diferencia:dif})]);
+   await c.query('COMMIT');res.status(201).json(insert.rows[0]);
+  }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
+ }));
  return router;
 };
