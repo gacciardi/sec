@@ -358,6 +358,7 @@ router.get('/auditoria',admin,wrap(async(req,res)=>{const r=await db.query('SELE
 
 router.use(require('./distribucion-alertas')(db));
 router.use(require('./distribucion-anomalias')(db));
+router.use(require('./distribucion-flota')(db));
 router.use(require('./distribucion-rendicion')(db));
 router.use(require('./distribucion-recorridos')(db));
 
