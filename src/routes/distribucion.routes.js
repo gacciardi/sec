@@ -248,11 +248,15 @@ router.post('/asigno/importar',admin,upload.single('archivo'),wrap(async(req,res
  if(!rows[1]||String(rows[1][5]||'').trim().toLowerCase()!=='despacho'||String(rows[1][4]||'').trim().toLowerCase()!=='int')throw error('Formato Asigno inválido: se esperan Int y Despacho en la fila 2');
  const registros=[],duplicados=new Set(),vistos=new Set();
  for(let i=2;i<rows.length;i++){
-  const r=rows[i],despacho=String(r[5]??'').trim();
-  if(!despacho)continue;
-  if(!/^\d+$/.test(despacho))continue;
-  if(vistos.has(despacho)){duplicados.add(despacho);continue;}vistos.add(despacho);
-  registros.push({despacho,interno:String(r[4]??'').trim(),legajo:String(r[9]??'').trim(),conductor:String(r[10]??'').trim(),fila:i+1});
+  const r=rows[i],celda=String(r[5]??'').trim();
+  if(!celda)continue;
+  // Un renglon del Asigno representa un viaje; puede contener varios despachos separados por /.
+  const despachos=celda.split(/\s*\/\s*/);
+  if(!despachos.every(d=>/^\d+$/.test(d)))continue;
+  for(const despacho of despachos){
+   if(vistos.has(despacho)){duplicados.add(despacho);continue;}vistos.add(despacho);
+   registros.push({despacho,interno:String(r[4]??'').trim(),legajo:String(r[9]??'').trim(),conductor:String(r[10]??'').trim(),fila:i+1,despachos_viaje:celda});
+  }
  }
  if(!registros.length)throw error('No se encontraron despachos en Asigno');
  const [repartos,conductores,vehiculos]=await Promise.all([
