@@ -114,6 +114,7 @@ router.use(async(req,res,next)=>{try{
 }catch(e){next(e);}});
 
 const admin=(req,res,next)=>['ADMIN','SUPERVISOR'].includes(req.actor.rol)?next():next(error('Acceso restringido',403));
+const operacion=(req,res,next)=>['ADMIN','SUPERVISOR','OPERADOR'].includes(req.actor.rol)?next():next(error('Acceso restringido',403));
 router.use(require('./distribucion-ingreso-conductor').vinculos(db));
 
 router.post('/logout',wrap(async(req,res)=>{await db.query('DELETE FROM distribucion.sesiones WHERE token_hash=$1',[hash((req.get('Authorization')||'').replace(/^Bearer /,''))]);res.json({ok:true});}));
@@ -217,7 +218,7 @@ router.post('/importar-horarios',admin,upload.single('archivo'),wrap(async(req,r
  res.json({ok:true,clientes:new Set(cambios.map(x=>x.codigo)).size,horarios:cambios.length});
 }));
 
-router.post('/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
+router.post('/importar',operacion,upload.single('archivo'),wrap(async(req,res)=>{
 
  if(!req.file)throw error('Seleccionar Excel');
  const fechaManual=String(req.body.fecha_entrega_real||'').trim();
@@ -238,7 +239,7 @@ router.post('/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
 
 /* Asigno: fila 1 fecha, fila 2 encabezados, filas 3+ asignaciones.
    El servidor revalida el archivo en cada solicitud: la vista previa nunca escribe. */
-router.post('/asigno/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{
+router.post('/asigno/importar',operacion,upload.single('archivo'),wrap(async(req,res)=>{
  if(!req.file)throw error('Seleccionar archivo Asigno');
  const fecha=String(req.body.fecha_entrega_real||'').trim();
  if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha)||new Date(fecha+'T00:00:00Z').toISOString().slice(0,10)!==fecha)throw error('Fecha real de entrega inválida');
