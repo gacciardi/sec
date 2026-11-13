@@ -23,13 +23,13 @@ module.exports=function(db){
   res.json(r.rows);
  }));
  router.post('/alertas-conductor/:id/confirmar',wrap(async(req,res)=>{
-  if(!['ADMIN','SUPERVISOR'].includes(req.actor.rol))throw fail('Solo oficina',403);
+  if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(req.actor.rol))throw fail('Solo oficina',403);
   const r=await db.query(`UPDATE distribucion.alertas_conductor SET estado='CONFIRMADA',confirmada_en=now(),confirmada_por=$3
    WHERE id=$1 AND empresa_id=$2 AND estado='ENVIADA' RETURNING *`,[req.params.id,req.actor.empresa_id,req.actor.id]);
   if(!r.rowCount)throw fail('Alerta no pendiente',409);res.json(r.rows[0]);
  }));
  router.post('/alertas-conductor/:id/resolver',wrap(async(req,res)=>{
-  if(!['ADMIN','SUPERVISOR'].includes(req.actor.rol))throw fail('Solo oficina',403);
+  if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(req.actor.rol))throw fail('Solo oficina',403);
   const r=await db.query(`UPDATE distribucion.alertas_conductor SET estado='RESUELTA',resuelta_en=now(),resuelta_por=$3
    WHERE id=$1 AND empresa_id=$2 AND estado='CONFIRMADA' RETURNING *`,[req.params.id,req.actor.empresa_id,req.actor.id]);
   if(!r.rowCount)throw fail('Primero confirmar lectura',409);res.json(r.rows[0]);
