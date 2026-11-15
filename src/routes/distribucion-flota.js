@@ -6,6 +6,19 @@ module.exports=db=>{
  const office=(req,res,next)=>['ADMIN','SUPERVISOR','OPERADOR'].includes(req.actor.rol)?next():next(fail('Acceso restringido',403));
  const validDate=s=>/^\d{4}-\d{2}-\d{2}$/.test(String(s||''));
  const validMoney=n=>Number.isFinite(n)&&n>=0&&Math.round(n*100)===n*100;
+ router.get('/mantenimiento/mecanicos',office,wrap(async(req,res)=>{
+  const r=await db.query('SELECT id,nombre,telefono,activo FROM distribucion.mecanicos_asistencia WHERE empresa_id=$1 ORDER BY activo DESC,nombre,id',[req.actor.empresa_id]);res.json(r.rows);
+ }));
+ router.post('/mantenimiento/mecanicos',office,wrap(async(req,res)=>{
+  const nombre=String(req.body?.nombre||'').trim(),telefono=String(req.body?.telefono||'').trim();
+  if(!nombre||nombre.length>100||!/^\\+?[0-9 ()-]{8,25}$/.test(telefono))throw fail('Ingresar nombre y teléfono válido');
+  const r=await db.query('INSERT INTO distribucion.mecanicos_asistencia(empresa_id,nombre,telefono,activo) VALUES($1,$2,$3,true) RETURNING id,nombre,telefono,activo',[req.actor.empresa_id,nombre,telefono]);res.status(201).json(r.rows[0]);
+ }));
+ router.put('/mantenimiento/mecanicos/:id',office,wrap(async(req,res)=>{
+  const nombre=String(req.body?.nombre||'').trim(),telefono=String(req.body?.telefono||'').trim(),activo=req.body?.activo;
+  if(!nombre||nombre.length>100||!/^\\+?[0-9 ()-]{8,25}$/.test(telefono)||typeof activo!=='boolean')throw fail('Datos de mecánico inválidos');
+  const r=await db.query('UPDATE distribucion.mecanicos_asistencia SET nombre=$3,telefono=$4,activo=$5,actualizado_en=now() WHERE empresa_id=$1 AND id=$2 RETURNING id,nombre,telefono,activo',[req.actor.empresa_id,req.params.id,nombre,telefono,activo]);if(!r.rowCount)throw fail('Mecánico no encontrado',404);res.json(r.rows[0]);
+ }));
  router.get('/mantenimiento/trabajos',office,wrap(async(req,res)=>{
   const r=await db.query(`SELECT t.*,v.interno,v.patente,v.tipo AS tipo_vehiculo FROM distribucion.mantenimiento_trabajos t
    JOIN distribucion.vehiculos v ON v.id=t.vehiculo_id AND v.empresa_id=t.empresa_id
