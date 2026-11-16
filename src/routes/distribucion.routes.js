@@ -4,6 +4,8 @@ const db=require('../config/database'),importador=require('./distribucion-import
 
 const router=express.Router(),upload=multer({storage:multer.memoryStorage(),limits:{fileSize:25*1024*1024}});
 router.use(require('./distribucion-ingreso-conductor')(db));
+const asistenciaMecanica=require('./distribucion-asistencia-mecanica')(db);
+router.use(asistenciaMecanica.publicRouter);
 
 const hash=t=>crypto.createHash('sha256').update(t).digest('hex');
 
@@ -361,6 +363,7 @@ router.use(require('./distribucion-oficina')(db));
 router.use(require('./distribucion-alertas-operativas')(db));
 router.use(require('./distribucion-anomalias')(db));
 router.use(require('./distribucion-flota')(db));
+router.use(asistenciaMecanica.officeRouter);
 router.use(require('./distribucion-rendicion')(db));
 router.use(require('./distribucion-estadisticas')(db));
 router.use(require('./distribucion-recorridos')(db));
