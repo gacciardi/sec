@@ -61,14 +61,14 @@ module.exports=function(db){
  router.post('/fotos-recorrido',photo.single('archivo'),wrap(async(req,res)=>{
   if(req.actor.rol!=='CONDUCTOR')return res.status(403).json({error:'Solo conductores'});
   const f=req.file;if(!f||!((f.buffer[0]===255&&f.buffer[1]===216&&f.buffer[2]===255)||(f.buffer.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))))return res.status(400).json({error:'JPEG o PNG, máximo 5 MB'});
-  const b=req.body,lat=b.latitud===''?null:Number(b.latitud),lng=b.longitud===''?null:Number(b.longitud),precision=b.precision_metros===''?null:Number(b.precision_metros);
+  const b=req.body,lat=b.latitud==null||b.latitud===''?null:Number(b.latitud),lng=b.longitud==null||b.longitud===''?null:Number(b.longitud),precision=b.precision_metros==null||b.precision_metros===''?null:Number(b.precision_metros);
   if((lat!==null&&(!Number.isFinite(lat)||Math.abs(lat)>90))||(lng!==null&&(!Number.isFinite(lng)||Math.abs(lng)>180))||(precision!==null&&(!Number.isFinite(precision)||precision<0)))return res.status(400).json({error:'GPS inválido'});
   const asociado=b.reparto_id&&b.codigo_cliente;
   if(asociado){const p=await db.query(`SELECT 1 FROM distribucion.pedidos p JOIN distribucion.repartos r ON r.id=p.reparto_id AND r.empresa_id=p.empresa_id WHERE p.empresa_id=$1 AND r.conductor_id=$2 AND p.reparto_id=$3 AND p.codigo_cliente=$4 AND p.fecha=(now() AT TIME ZONE 'America/Argentina/Buenos_Aires')::date`,[req.actor.empresa_id,req.actor.id,b.reparto_id,b.codigo_cliente]);if(!p.rowCount)return res.status(403).json({error:'Cliente no asignado al conductor'});}
   const r=await db.query(`INSERT INTO distribucion.fotos_recorrido(empresa_id,conductor_id,reparto_id,codigo_cliente,contenido,mime,latitud,longitud,precision_metros,origen) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,fecha`,[req.actor.empresa_id,req.actor.id,asociado?b.reparto_id:null,asociado?b.codigo_cliente:null,f.buffer,f.buffer[0]===255?'image/jpeg':'image/png',lat,lng,precision,b.origen==='galeria'?'GALERIA':'CAMARA']);res.status(201).json(r.rows[0]);
  }));
  router.get('/fotos-recorrido',wrap(async(req,res)=>{
-  const r=await db.query(`SELECT * FROM (
+  const r=await db.query(`SELECT fotos.*,COALESCE(cliente.nombre_cliente,'') AS nombre_cliente FROM (
    SELECT f.id,f.fecha,f.codigo_cliente,f.reparto_id,f.latitud,f.longitud,f.origen,m.nombre,m.apellido,'RECORRIDO'::text AS tipo
    FROM distribucion.fotos_recorrido f JOIN distribucion.miembros m ON m.id=f.conductor_id AND m.empresa_id=f.empresa_id
    WHERE f.empresa_id=$1 AND ($2::uuid IS NULL OR f.conductor_id=$2::uuid) AND ($3::date IS NULL OR (f.fecha AT TIME ZONE 'America/Argentina/Buenos_Aires')::date=$3::date)
@@ -78,7 +78,7 @@ module.exports=function(db){
    JOIN distribucion.repartos rp ON rp.id=v.reparto_id AND rp.empresa_id=v.empresa_id
    JOIN distribucion.miembros m ON m.id=f.actor_id AND m.empresa_id=f.empresa_id
    WHERE $4::boolean AND f.empresa_id=$1 AND ($2::uuid IS NULL OR rp.conductor_id=$2::uuid) AND ($3::date IS NULL OR (f.fecha AT TIME ZONE 'America/Argentina/Buenos_Aires')::date=$3::date)
-  ) fotos ORDER BY fecha DESC LIMIT 500`,[req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null,req.query.fecha||null,req.query.incluir_entregas==='1']);res.json(r.rows);
+  ) fotos LEFT JOIN LATERAL(SELECT p.nombre_cliente FROM distribucion.pedidos p WHERE p.empresa_id=$1 AND p.reparto_id=fotos.reparto_id AND p.codigo_cliente=fotos.codigo_cliente LIMIT 1) cliente ON true ORDER BY fotos.fecha DESC LIMIT 500`,[req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null,req.query.fecha||null,req.query.incluir_entregas==='1']);res.json(r.rows);
  }));
  router.get('/fotos-recorrido/:id/imagen',wrap(async(req,res)=>{
   const r=await db.query('SELECT contenido,mime FROM distribucion.fotos_recorrido WHERE id=$1 AND empresa_id=$2 AND ($3::uuid IS NULL OR conductor_id=$3::uuid)',[req.params.id,req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null]);if(!r.rowCount)return res.sendStatus(404);res.set('Cache-Control','no-store').type(r.rows[0].mime).send(r.rows[0].contenido);
