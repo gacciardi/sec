@@ -68,7 +68,17 @@ module.exports=function(db){
   const r=await db.query(`INSERT INTO distribucion.fotos_recorrido(empresa_id,conductor_id,reparto_id,codigo_cliente,contenido,mime,latitud,longitud,precision_metros,origen) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id,fecha`,[req.actor.empresa_id,req.actor.id,asociado?b.reparto_id:null,asociado?b.codigo_cliente:null,f.buffer,f.buffer[0]===255?'image/jpeg':'image/png',lat,lng,precision,b.origen==='galeria'?'GALERIA':'CAMARA']);res.status(201).json(r.rows[0]);
  }));
  router.get('/fotos-recorrido',wrap(async(req,res)=>{
-  const r=await db.query(`SELECT f.id,f.fecha,f.codigo_cliente,f.reparto_id,f.latitud,f.longitud,f.origen,m.nombre,m.apellido FROM distribucion.fotos_recorrido f JOIN distribucion.miembros m ON m.id=f.conductor_id AND m.empresa_id=f.empresa_id WHERE f.empresa_id=$1 AND ($2::uuid IS NULL OR f.conductor_id=$2::uuid) AND ($3::date IS NULL OR (f.fecha AT TIME ZONE 'America/Argentina/Buenos_Aires')::date=$3::date) ORDER BY f.fecha DESC LIMIT 500`,[req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null,req.query.fecha||null]);res.json(r.rows);
+  const r=await db.query(`SELECT * FROM (
+   SELECT f.id,f.fecha,f.codigo_cliente,f.reparto_id,f.latitud,f.longitud,f.origen,m.nombre,m.apellido,'RECORRIDO'::text AS tipo
+   FROM distribucion.fotos_recorrido f JOIN distribucion.miembros m ON m.id=f.conductor_id AND m.empresa_id=f.empresa_id
+   WHERE f.empresa_id=$1 AND ($2::uuid IS NULL OR f.conductor_id=$2::uuid) AND ($3::date IS NULL OR (f.fecha AT TIME ZONE 'America/Argentina/Buenos_Aires')::date=$3::date)
+   UNION ALL
+   SELECT f.id,f.fecha,v.codigo_cliente,v.reparto_id,NULL::numeric AS latitud,NULL::numeric AS longitud,'ENTREGA'::text AS origen,m.nombre,m.apellido,'ENTREGA'::text AS tipo
+   FROM distribucion.fotos f JOIN distribucion.visitas v ON v.id=f.visita_id AND v.empresa_id=f.empresa_id
+   JOIN distribucion.repartos rp ON rp.id=v.reparto_id AND rp.empresa_id=v.empresa_id
+   JOIN distribucion.miembros m ON m.id=f.actor_id AND m.empresa_id=f.empresa_id
+   WHERE $4::boolean AND f.empresa_id=$1 AND ($2::uuid IS NULL OR rp.conductor_id=$2::uuid) AND ($3::date IS NULL OR (f.fecha AT TIME ZONE 'America/Argentina/Buenos_Aires')::date=$3::date)
+  ) fotos ORDER BY fecha DESC LIMIT 500`,[req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null,req.query.fecha||null,req.query.incluir_entregas==='1']);res.json(r.rows);
  }));
  router.get('/fotos-recorrido/:id/imagen',wrap(async(req,res)=>{
   const r=await db.query('SELECT contenido,mime FROM distribucion.fotos_recorrido WHERE id=$1 AND empresa_id=$2 AND ($3::uuid IS NULL OR conductor_id=$3::uuid)',[req.params.id,req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null]);if(!r.rowCount)return res.sendStatus(404);res.set('Cache-Control','no-store').type(r.rows[0].mime).send(r.rows[0].contenido);

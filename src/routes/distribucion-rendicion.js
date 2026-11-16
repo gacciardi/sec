@@ -98,7 +98,7 @@ module.exports=function(db){
  router.get('/rendicion/cierre-caja',wrap(async(req,res)=>{
   if(!['CONDUCTOR','ADMIN','SUPERVISOR'].includes(req.actor.rol))throw fail('Acceso restringido',403);
   const fecha=String(req.query.fecha||'');
-  if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(fecha))throw fail('Fecha inválida');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha))throw fail('Fecha inválida');
   const conductor=req.actor.rol==='CONDUCTOR'?req.actor.id:req.query.conductor_id;
   if(!conductor)throw fail('Indicar conductor');
   const r=await db.query('SELECT * FROM distribucion.cierres_caja_conductor WHERE empresa_id=$1 AND conductor_id=$2 AND fecha=$3::date',[req.actor.empresa_id,conductor,fecha]);
@@ -107,7 +107,7 @@ module.exports=function(db){
  router.post('/rendicion/cierre-caja',wrap(async(req,res)=>{
   if(req.actor.rol!=='CONDUCTOR')throw fail('Solo el conductor puede cerrar su caja',403);
   const b=req.body||{},fecha=String(b.fecha||''),declarado=Number(b.efectivo_declarado);
-  if(!/^\\d{4}-\\d{2}-\\d{2}$/.test(fecha)||!Number.isFinite(declarado)||declarado<0||!Number.isInteger(declarado*100+1e-7)||String(b.observacion||'').length>1000)throw fail('Datos del cierre inválidos');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha)||!Number.isFinite(declarado)||declarado<0||importeEnCentavosSEC(b.efectivo_declarado)===null||String(b.observacion||'').length>1000)throw fail('Datos del cierre inválidos');
   const c=await db.connect();
   try{
    await c.query('BEGIN');
