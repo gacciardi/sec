@@ -361,6 +361,7 @@ router.use(require('./distribucion-alertas-operativas')(db));
 router.use(require('./distribucion-anomalias')(db));
 router.use(require('./distribucion-flota')(db));
 router.use(require('./distribucion-rendicion')(db));
+router.use(require('./distribucion-estadisticas')(db));
 router.use(require('./distribucion-recorridos')(db));
 
 router.use((e,req,res,next)=>{console.error('Distribución:',e.code||e.message);res.status(e.code==='23505'?409:e.status||500).json({error:e.code==='23505'?'Registro duplicado en esta empresa':e.status?e.message:'Error de Distribución; consultar el registro del servidor'});});
