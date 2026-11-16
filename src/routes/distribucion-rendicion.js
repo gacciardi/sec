@@ -1,5 +1,12 @@
 'use strict';
 const express=require('express');
+function importeEnCentavosSEC(valor){
+ if(typeof valor!=='string'&&typeof valor!=='number')return null;
+ const texto=String(valor).trim();if(!/^\d+(?:\.\d{1,2})?$/.test(texto))return null;
+ const [entero,decimal='']=texto.split('.');const centavos=Number(entero)*100+Number(decimal.padEnd(2,'0'));
+ return Number.isSafeInteger(centavos)?centavos:null;
+}
+
 module.exports=function(db){
  const router=express.Router();
  const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
@@ -49,7 +56,7 @@ module.exports=function(db){
  router.post('/rendicion/entregas',wrap(async(req,res)=>{
   if(!['CONDUCTOR','ADMIN','SUPERVISOR'].includes(req.actor.rol))throw fail('Acceso restringido',403);
   const b=req.body||{},estado=b.estado,entregado=Number(b.importe_entregado),cobros=b.cobros;
-  if(!['ENTREGADO','PARCIAL','RECHAZADO'].includes(estado)||!Array.isArray(cobros)||cobros.length>8||!Number.isFinite(entregado)||entregado<0||!Number.isInteger(Math.round(entregado*100))||!b.reparto_id||!b.codigo_cliente)throw fail('Datos de rendición inválidos');
+  if(!['ENTREGADO','PARCIAL','RECHAZADO'].includes(estado)||!Array.isArray(cobros)||cobros.length>8||importeEnCentavosSEC(b.importe_entregado)===null||!b.reparto_id||!b.codigo_cliente)throw fail('Datos de rendición inválidos');
   const c=await db.connect();
   try{
    await c.query('BEGIN');
@@ -59,8 +66,8 @@ module.exports=function(db){
    if(cierre.rowCount)throw fail('La caja del conductor está cerrada. Solicitá revisión a supervisión antes de modificar la rendición.',409);
    const p=await c.query('SELECT COALESCE(SUM(importe),0)::numeric AS total,COUNT(*)::int AS cantidad FROM distribucion.pedidos WHERE empresa_id=$1 AND reparto_id=$2 AND codigo_cliente=$3',[req.actor.empresa_id,b.reparto_id,String(b.codigo_cliente)]);
    if(!p.rows[0].cantidad)throw fail('Cliente sin pedidos en el reparto',404);
-   const total=Number(p.rows[0].total),centavos=n=>Math.round(Number(n)*100);
-   if(!Number.isFinite(total)||total<0||centavos(entregado)>centavos(total))throw fail('Importe entregado fuera de rango');
+   const total=Number(p.rows[0].total),centavos=importeEnCentavosSEC;
+   if(centavos(p.rows[0].total)===null||centavos(entregado)>centavos(total))throw fail('Importe entregado fuera de rango');
    if((estado==='ENTREGADO'&&centavos(entregado)!==centavos(total))||(estado==='RECHAZADO'&&centavos(entregado)!==0)||(estado==='PARCIAL'&&(centavos(entregado)<=0||centavos(entregado)>=centavos(total))))throw fail('Estado e importe no coinciden');
    let motivo=null;
    if(estado!=='ENTREGADO'){
@@ -70,12 +77,12 @@ module.exports=function(db){
    let suma=0;const medios=[];
    for(const pago of cobros){
     const importe=Number(pago.importe);
-    if(!Number.isFinite(importe)||centavos(importe)<=0||centavos(importe)!==importe*100||String(pago.referencia||'').length>150)throw fail('Cobro inválido');
+    if(centavos(pago.importe)===null||centavos(pago.importe)<=0||String(pago.referencia||'').length>150)throw fail('Cobro inválido');
     const m=await c.query('SELECT id,nombre,clasificacion FROM distribucion.medios_cobranza WHERE id=$1 AND empresa_id=$2 AND activo=true',[pago.medio_cobranza_id,req.actor.empresa_id]);
     if(!m.rowCount)throw fail('Medio de cobranza inválido');
     medios.push({...m.rows[0],importe,referencia:String(pago.referencia||'')});suma+=centavos(importe);
    }
-   if(suma>centavos(entregado))throw fail('Los cobros superan la mercadería entregada');
+   if(!Number.isSafeInteger(suma)||suma>centavos(entregado))throw fail('Los cobros superan la mercadería entregada');
    const v=await c.query(`INSERT INTO distribucion.rendicion_entregas(empresa_id,reparto_id,codigo_cliente,estado,motivo_rechazo_id,motivo_rechazo_nombre,importe_original,importe_entregado,observacion,actualizado_por)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
    ON CONFLICT(empresa_id,reparto_id,codigo_cliente) DO UPDATE SET estado=excluded.estado,motivo_rechazo_id=excluded.motivo_rechazo_id,motivo_rechazo_nombre=excluded.motivo_rechazo_nombre,importe_original=excluded.importe_original,importe_entregado=excluded.importe_entregado,observacion=excluded.observacion,actualizado_por=excluded.actualizado_por,actualizado_en=now() RETURNING *`,
@@ -121,3 +128,5 @@ module.exports=function(db){
  }));
  return router;
 };
+
+module.exports._test={importeEnCentavosSEC};
