@@ -13,12 +13,12 @@ module.exports=db=>{
  }));
  router.post('/mantenimiento/mecanicos',office,mecanicosReady,wrap(async(req,res)=>{
   const nombre=String(req.body?.nombre||'').trim(),telefono=String(req.body?.telefono||'').trim();
-  if(!nombre||nombre.length>100||!/^\\+?[0-9 ()-]{8,25}$/.test(telefono))throw fail('Ingresar nombre y teléfono válido');
+  if(!nombre||nombre.length>100||!/^\+?[0-9 ()-]{8,25}$/.test(telefono))throw fail('Ingresar nombre y teléfono válido');
   const r=await db.query('INSERT INTO distribucion.mecanicos_asistencia(empresa_id,nombre,telefono,activo) VALUES($1,$2,$3,true) RETURNING id,nombre,telefono,activo',[req.actor.empresa_id,nombre,telefono]);res.status(201).json(r.rows[0]);
  }));
  router.put('/mantenimiento/mecanicos/:id',office,mecanicosReady,wrap(async(req,res)=>{
   const nombre=String(req.body?.nombre||'').trim(),telefono=String(req.body?.telefono||'').trim(),activo=req.body?.activo;
-  if(!nombre||nombre.length>100||!/^\\+?[0-9 ()-]{8,25}$/.test(telefono)||typeof activo!=='boolean')throw fail('Datos de mecánico inválidos');
+  if(!nombre||nombre.length>100||!/^\+?[0-9 ()-]{8,25}$/.test(telefono)||typeof activo!=='boolean')throw fail('Datos de mecánico inválidos');
   const r=await db.query('UPDATE distribucion.mecanicos_asistencia SET nombre=$3,telefono=$4,activo=$5,actualizado_en=now() WHERE empresa_id=$1 AND id=$2 RETURNING id,nombre,telefono,activo',[req.actor.empresa_id,req.params.id,nombre,telefono,activo]);if(!r.rowCount)throw fail('Mecánico no encontrado',404);res.json(r.rows[0]);
  }));
  router.get('/mantenimiento/trabajos',office,wrap(async(req,res)=>{
