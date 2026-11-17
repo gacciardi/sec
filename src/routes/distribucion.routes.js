@@ -202,7 +202,7 @@ router.post('/importar-horarios',admin,upload.single('archivo'),wrap(async(req,r
   const partes=horario.split(/\s*(?:\/|;)\s*/).filter(Boolean);
   const turnos=partes.map(p=>{const m=p.match(/^\s*(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*$/);return m?[hh(m[1]),hh(m[2])]:[];});
   const descarga=String(f.DESCARGAMIN||f.MINUTOSDESCARGA||'').trim();
-  const minutos=descarga===''?15:Number(descarga);
+  const minutos=descarga===''?5:Number(descarga);
   if(!codigo||codigo.length>100||!ds.length||!turnos.length||turnos.length>2||turnos.some(t=>t.length!==2||!t[0]||!t[1]||t[0]>=t[1])||(turnos[1]&&turnos[1][0]<turnos[0][1])||!Number.isInteger(minutos)||minutos<0||minutos>480){
    errores.push({fila:i+2,cliente:codigo,detalle:'Cliente, día, horario o descarga inválidos'});continue;
   }
@@ -213,6 +213,7 @@ router.post('/importar-horarios',admin,upload.single('archivo'),wrap(async(req,r
  if(errores.length)return res.status(422).json({error:'Archivo sin importar: corregí las filas indicadas',filas:errores.slice(0,100),total_errores:errores.length});
  if(req.body.solo_validar==='1')return res.json({validado:true,filas:filas.length,clientes:new Set(cambios.map(x=>x.codigo)).size,horarios:cambios.length});
  if(req.body.confirmar!=='SI')throw error('Primero validá y confirmá la importación');
+ await require('./distribucion-ruteo-horarios').asegurarHorarios(db);
  await transaction(async c=>{
   for(const x of cambios){
    await c.query(`INSERT INTO distribucion.horarios_recepcion(empresa_id,codigo_cliente,dia_semana,apertura_1,cierre_1,apertura_2,cierre_2,minutos_descarga) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(empresa_id,codigo_cliente,dia_semana) DO UPDATE SET apertura_1=EXCLUDED.apertura_1,cierre_1=EXCLUDED.cierre_1,apertura_2=EXCLUDED.apertura_2,cierre_2=EXCLUDED.cierre_2,minutos_descarga=EXCLUDED.minutos_descarga,actualizado_en=now()`,[req.actor.empresa_id,x.codigo,x.dia,x.turnos[0][0],x.turnos[0][1],x.turnos[1]?.[0]||null,x.turnos[1]?.[1]||null,x.minutos]);

@@ -25,32 +25,7 @@ module.exports=function(db){
  // Fotos del recorrido: asociación opcional por geocerca, sin alterar el estado de entrega.
  router.get('/mapa-google/configuracion',wrap(async(req,res)=>{res.set('Cache-Control','no-store').json({api_key:process.env.GOOGLE_MAPS_BROWSER_API_KEY||null});}));
  // Routes API: orden por red vial y tráfico. La clave permanece exclusivamente en Render.
- router.post('/rutas-google/sugerir',wrap(async(req,res)=>{
-  if(req.actor.rol!=='CONDUCTOR')return res.status(403).json({error:'Solo conductores'});
-  const key=process.env.GOOGLE_MAPS_ROUTES_API_KEY;
-  if(!key)return res.status(503).json({error:'Falta configurar GOOGLE_MAPS_ROUTES_API_KEY en Render'});
-  const origen=req.body?.origen,puntos=req.body?.puntos;
-  const valido=p=>p&&Number.isFinite(Number(p.latitud))&&Number.isFinite(Number(p.longitud))&&Math.abs(Number(p.latitud))<=90&&Math.abs(Number(p.longitud))<=180;
-  if(!valido(origen)||!Array.isArray(puntos)||puntos.length<1||puntos.length>100||puntos.some(p=>!valido(p)||!p.reparto_id||!p.codigo_cliente))return res.status(400).json({error:'Puntos de ruta inválidos'});
-  const ids=[...new Set(puntos.map(p=>String(p.reparto_id)))];
-  const permitidos=await db.query('SELECT p.reparto_id,p.codigo_cliente FROM distribucion.pedidos p JOIN distribucion.repartos r ON r.id=p.reparto_id AND r.empresa_id=p.empresa_id WHERE p.empresa_id=$1 AND r.conductor_id=$2 AND p.reparto_id=ANY($3::uuid[])',[req.actor.empresa_id,req.actor.id,ids]);
-  const permitido=new Set(permitidos.rows.map(p=>p.reparto_id+'|'+p.codigo_cliente));
-  if(puntos.some(p=>!permitido.has(p.reparto_id+'|'+p.codigo_cliente)))return res.status(403).json({error:'Hay clientes no asignados al conductor'});
-  const wp=p=>({location:{latLng:{latitude:Number(p.latitud),longitude:Number(p.longitud)}}});
-  let actual=origen,restantes=[...puntos],orden=[],distanciaMetros=0,duracionSegundos=0,polilineas=[];
-  while(restantes.length){
-   // Máximo 25 puntos intermedios; se deja el último como destino.
-   const grupo=restantes.splice(0,25),destino=grupo[grupo.length-1],intermedios=grupo.slice(0,-1);
-   const payload={origin:wp(actual),destination:wp(destino),intermediates:intermedios.map(wp),travelMode:'DRIVE',routingPreference:'TRAFFIC_AWARE',computeAlternativeRoutes:false,languageCode:'es-AR',units:'METRIC'};
-   if(intermedios.length>1)payload.optimizeWaypointOrder=true;
-   const response=await fetch('https://routes.googleapis.com/directions/v2:computeRoutes',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':key,'X-Goog-FieldMask':'routes.duration,routes.distanceMeters,routes.optimizedIntermediateWaypointIndex,routes.polyline.encodedPolyline'},body:JSON.stringify(payload)});
-   const body=await response.json().catch(()=>({}));
-   if(!response.ok||!body.routes?.[0])return res.status(502).json({error:'Google Routes: '+(body.error?.message||'No se pudo calcular el recorrido')});
-   const ruta=body.routes[0],indices=ruta.optimizedIntermediateWaypointIndex||intermedios.map((_,i)=>i);
-   orden.push(...indices.map(i=>intermedios[i]),destino);distanciaMetros+=Number(ruta.distanceMeters)||0;duracionSegundos+=Number(String(ruta.duration||'0s').replace('s',''))||0;if(ruta.polyline?.encodedPolyline)polilineas.push(ruta.polyline.encodedPolyline);actual=destino;
-  }
-  res.json({orden:orden.map(p=>({reparto_id:p.reparto_id,codigo_cliente:p.codigo_cliente})),distancia_metros:distanciaMetros,duracion_segundos:duracionSegundos,polilineas,metodo:'GOOGLE_ROUTES_TRAFFIC_AWARE',nota:puntos.length>25?'Ruta calculada por tramos; el orden global no está optimizado.':'Tránsito considerado al estimar el recorrido.'});
- }));
+ router.use(require('./distribucion-ruteo-horarios')(db));
  router.get('/fotos-recorrido/candidatos',wrap(async(req,res)=>{
   if(req.actor.rol!=='CONDUCTOR')return res.status(403).json({error:'Solo conductores'});
   const lat=Number(req.query.latitud),lng=Number(req.query.longitud),accuracy=Number(req.query.precision_metros);
