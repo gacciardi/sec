@@ -103,6 +103,14 @@ module.exports=function(db){
  }));
 
  // Cierre diario: el conductor declara efectivo físico. La diferencia se calcula en servidor.
+ // Consulta de oficina: un cierre diario por chofer, independientemente de sus viajes.
+ router.get('/rendicion/cierres-caja',wrap(async(req,res)=>{
+  if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(req.actor.rol))throw fail('Acceso restringido',403);
+  const fecha=String(req.query.fecha||'');
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha)||!Number.isFinite(Date.parse(fecha+'T00:00:00Z'))||new Date(fecha+'T00:00:00Z').toISOString().slice(0,10)!==fecha)throw fail('Fecha inválida');
+  const r=await db.query(`SELECT c.*,m.nombre,m.apellido FROM distribucion.cierres_caja_conductor c JOIN distribucion.miembros m ON m.id=c.conductor_id AND m.empresa_id=c.empresa_id WHERE c.empresa_id=$1 AND c.fecha=$2::date ORDER BY m.apellido,m.nombre,c.cerrado_en`,[req.actor.empresa_id,fecha]);
+  res.set('Cache-Control','no-store').json(r.rows);
+ }));
  router.get('/rendicion/cierre-caja',wrap(async(req,res)=>{
   if(!['CONDUCTOR','ADMIN','SUPERVISOR'].includes(req.actor.rol))throw fail('Acceso restringido',403);
   const fecha=String(req.query.fecha||'');
