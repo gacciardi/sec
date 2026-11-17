@@ -29,6 +29,13 @@ const diagnosticoRutasRoutes = require("./routes/diagnostico-rutas.routes");
 const app = express();
 
 app.use(cors());
+// La confirmación de hasta 10.000 contactos supera el límite JSON habitual.
+// El resto de SEC conserva su límite original.
+app.use('/distribucion/telefonos-clientes/confirmar', express.json({limit:'1mb'}), (err,req,res,next)=>{
+  if(err?.type==='entity.too.large')return res.status(413).json({error:'La selección supera el límite de importación. Importá hasta 10.000 contactos por archivo.'});
+  if(err?.type==='entity.parse.failed')return res.status(400).json({error:'No se pudo leer la confirmación. Volvé a intentar desde la revisión.'});
+  next(err);
+});
 app.use(express.json());
 
 console.log("APP.JS CARGADO");
