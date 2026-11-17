@@ -24,7 +24,7 @@ module.exports=db=>{
   res.status(201).json(r.rows[0]);
  }));
  router.patch('/anomalias-vehiculo/:id',wrap(async(req,res)=>{
-  if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(req.actor.rol))throw fail('Acceso restringido',403);
+  if(!['ADMIN','SUPERVISOR','OPERADOR','MECANICO'].includes(req.actor.rol))throw fail('Acceso restringido',403);
   const estado=String(req.body?.estado||''),nota=String(req.body?.observacion_mantenimiento||'');
   if(!['PENDIENTE','EN_REVISION','RESUELTA'].includes(estado)||nota.length>1500)throw fail('Datos inválidos');
   const r=await db.query("UPDATE distribucion.anomalias_vehiculo SET estado=$3,observacion_mantenimiento=$4,actualizado_en=now(),resuelto_en=CASE WHEN $3='RESUELTA' THEN now() ELSE NULL END WHERE empresa_id=$1 AND id=$2 RETURNING *",[req.actor.empresa_id,req.params.id,estado,nota]);

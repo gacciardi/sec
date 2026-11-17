@@ -26,6 +26,7 @@ function credenciales(b){for(const k of ['legajo','nombre','apellido'])if(typeof
 async function alta(c,empresa,b,rol){
 
  credenciales(b);
+ if(rol==='MECANICO')await require('./distribucion-mecanico-acceso').prepararPerfil(c);
 
  const enlace=await c.query(`
 
@@ -53,7 +54,7 @@ async function alta(c,empresa,b,rol){
 
    (nombre,apellido,email,rol,legajo,activo,empresa_id,sector_id)
 
-  VALUES($1,$2,$3,'CONDUCTOR',$4,$5,$6,$7) RETURNING id
+  VALUES($1,$2,$3,$8,$4,$5,$6,$7) RETURNING id
 
  `,[b.nombre.trim(),b.apellido.trim(),
 
@@ -61,7 +62,7 @@ async function alta(c,empresa,b,rol){
 
     b.legajo.trim(),b.activo!==false,
 
-    vinculo.empresa_id,vinculo.sector_id]);
+    vinculo.empresa_id,vinculo.sector_id,rol==='MECANICO'?'MECANICO':'CONDUCTOR']);
 
  const r=await c.query(`
 
@@ -115,6 +116,7 @@ router.use(async(req,res,next)=>{try{
 
 }catch(e){next(e);}});
 
+router.use(require('./distribucion-mecanico-acceso').restringir);
 const admin=(req,res,next)=>['ADMIN','SUPERVISOR'].includes(req.actor.rol)?next():next(error('Acceso restringido',403));
 const operacion=(req,res,next)=>['ADMIN','SUPERVISOR','OPERADOR'].includes(req.actor.rol)?next():next(error('Acceso restringido',403));
 router.use(require('./distribucion-ingreso-conductor').vinculos(db));
@@ -142,7 +144,7 @@ router.get('/usuarios',soloAdmin,wrap(async(req,res)=>{
 }));
 
 router.post('/usuarios',soloAdmin,wrap(async(req,res)=>{
- const b=req.body||{};if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(b.rol))throw error('Perfil inválido');
+ const b=req.body||{};if(!['ADMIN','SUPERVISOR','OPERADOR','MECANICO'].includes(b.rol))throw error('Perfil inválido');
  const r=await transaction(async c=>{const m=await alta(c,req.actor.empresa_id,b,b.rol);await audit(c,req.actor,'ALTA_USUARIO',{id:m.id,legajo:m.legajo,rol:m.rol});return m;});
  res.status(201).json(r);
 }));
@@ -295,9 +297,9 @@ router.post('/asigno/importar',operacion,upload.single('archivo'),wrap(async(req
  res.json({fecha,aplicados,pendientes:detalle.length-aplicados,detalle:detalle.map(({conductor_id,principal_id,reparto_id,...x})=>x)});
 }));
 
-router.get('/vehiculos',admin,wrap(async(req,res)=>{const r=await db.query('SELECT id,interno,patente,tipo,activo FROM distribucion.vehiculos WHERE empresa_id=$1 ORDER BY interno',[req.actor.empresa_id]);res.json(r.rows);}));
+router.get('/vehiculos',(req,res,next)=>['ADMIN','SUPERVISOR','MECANICO'].includes(req.actor.rol)?next():next(error('Acceso restringido',403)),wrap(async(req,res)=>{const r=await db.query('SELECT id,interno,patente,tipo,activo FROM distribucion.vehiculos WHERE empresa_id=$1 ORDER BY interno',[req.actor.empresa_id]);res.json(r.rows);}));
 
-router.post('/vehiculos/importar',admin,upload.single('archivo'),wrap(async(req,res)=>{if(!req.file)throw error('Seleccionar tabla');const rows=importador.vehiculos(req.file.buffer,req.actor.empresa_id);await transaction(async c=>{for(const v of rows)await c.query(`INSERT INTO distribucion.vehiculos(empresa_id,interno,patente,tipo) VALUES($1,$2,$3,$4) ON CONFLICT(empresa_id,interno) DO UPDATE SET patente=excluded.patente,tipo=excluded.tipo`,[req.actor.empresa_id,v.interno,v.patente,v.tipo]);await audit(c,req.actor,'IMPORTACION_VEHICULOS',{cantidad:rows.length});});res.json({importados:rows.length});}));
+router.post('/vehiculos/importar',(req,res,next)=>['ADMIN','SUPERVISOR','MECANICO'].includes(req.actor.rol)?next():next(error('Acceso restringido',403)),upload.single('archivo'),wrap(async(req,res)=>{if(!req.file)throw error('Seleccionar tabla');const rows=importador.vehiculos(req.file.buffer,req.actor.empresa_id);await transaction(async c=>{for(const v of rows)await c.query(`INSERT INTO distribucion.vehiculos(empresa_id,interno,patente,tipo) VALUES($1,$2,$3,$4) ON CONFLICT(empresa_id,interno) DO UPDATE SET patente=excluded.patente,tipo=excluded.tipo`,[req.actor.empresa_id,v.interno,v.patente,v.tipo]);await audit(c,req.actor,'IMPORTACION_VEHICULOS',{cantidad:rows.length});});res.json({importados:rows.length});}));
 
 router.put('/repartos/:id',admin,wrap(async(req,res)=>{const b=req.body;await transaction(async c=>{const old=await c.query('SELECT * FROM distribucion.repartos WHERE id=$1 AND empresa_id=$2 FOR UPDATE',[req.params.id,req.actor.empresa_id]);if(!old.rowCount)throw error('Reparto no encontrado',404);if(b.conductor_id){const r=await c.query("SELECT 1 FROM distribucion.miembros WHERE id=$1 AND empresa_id=$2 AND rol='CONDUCTOR' AND activo=true",[b.conductor_id,req.actor.empresa_id]);if(!r.rowCount)throw error('Conductor inválido');}let principal=null,semi=null;if(b.principal_id){const r=await c.query("SELECT * FROM distribucion.vehiculos WHERE id=$1 AND empresa_id=$2 AND tipo IN('camion','tractor') AND activo=true",[b.principal_id,req.actor.empresa_id]);principal=r.rows[0];if(!principal)throw error('Vehículo inválido');}if(b.semi_id){const r=await c.query("SELECT * FROM distribucion.vehiculos WHERE id=$1 AND empresa_id=$2 AND tipo='semi' AND activo=true",[b.semi_id,req.actor.empresa_id]);semi=r.rows[0];if(!semi||principal?.tipo!=='tractor')throw error('El semi requiere un tractor');}if(principal?.tipo==='tractor'&&!semi)throw error('Seleccionar semi');await c.query('UPDATE distribucion.repartos SET conductor_id=$3,principal_id=$4,semi_id=$5 WHERE id=$1 AND empresa_id=$2',[req.params.id,req.actor.empresa_id,b.conductor_id||null,b.principal_id||null,b.semi_id||null]);await audit(c,req.actor,'ASIGNACION_REPARTO',{id:req.params.id,anterior:old.rows[0],actual:b});});res.json({ok:true});}));
 
@@ -367,6 +369,7 @@ router.use(asistenciaMecanica.officeRouter);
 router.use(require('./distribucion-rendicion')(db));
 router.use(require('./distribucion-estadisticas')(db));
 router.use(require('./distribucion-recorridos')(db));
+router.use(require('./distribucion-vehiculos-abm')(db));
 
 router.use((e,req,res,next)=>{console.error('Distribución:',e.code||e.message);res.status(e.code==='23505'?409:e.status||500).json({error:e.code==='23505'?'Registro duplicado en esta empresa':e.status?e.message:'Error de Distribución; consultar el registro del servidor'});});
 
