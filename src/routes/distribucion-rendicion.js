@@ -7,8 +7,12 @@ function importeEnCentavosSEC(valor){
  return Number.isSafeInteger(centavos)?centavos:null;
 }
 
+function esCuentaCorrienteSEC(nombre){const n=String(nombre||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().trim();return /CUENTA[ _]*CORRIENTE|^C\.?\s*C\.?$|^CTA\.?\s*CTE\.?$/.test(n);}
+
 module.exports=function(db){
  const router=express.Router();
+ let ayudanteReady;const asegurarAyudante=()=>ayudanteReady||(ayudanteReady=db.query('ALTER TABLE distribucion.rendicion_entregas ADD COLUMN IF NOT EXISTS cobrado_por_ayudante boolean NOT NULL DEFAULT false').catch(e=>{ayudanteReady=null;throw e;}));
+ router.use('/rendicion/entregas',(req,res,next)=>asegurarAyudante().then(()=>next(),next));
  const wrap=fn=>(req,res,next)=>Promise.resolve(fn(req,res)).catch(next);
  const fail=(message,status=400)=>Object.assign(new Error(message),{status});
  const office=(req,res,next)=>req.actor.rol==='ADMIN'||req.actor.rol==='SUPERVISOR'?next():next(fail('Acceso restringido',403));
@@ -56,6 +60,9 @@ module.exports=function(db){
  router.post('/rendicion/entregas',wrap(async(req,res)=>{
   if(!['CONDUCTOR','ADMIN','SUPERVISOR'].includes(req.actor.rol))throw fail('Acceso restringido',403);
   const b=req.body||{},estado=b.estado,entregado=Number(b.importe_entregado),cobros=b.cobros;
+  if(b.cobrado_por_ayudante!==undefined&&typeof b.cobrado_por_ayudante!=='boolean')throw fail('La marca Cobrado por el ayudante debe ser sí o no.');
+  if(estado==='RECHAZADO'&&b.cobrado_por_ayudante===true)throw fail('Una entrega rechazada no puede marcarse como cobrada por el ayudante.');
+  const ayudante=estado==='RECHAZADO'?false:(b.cobrado_por_ayudante??null);
   if(!['ENTREGADO','PARCIAL','RECHAZADO'].includes(estado)||!Array.isArray(cobros)||cobros.length>8||importeEnCentavosSEC(b.importe_entregado)===null||!b.reparto_id||!b.codigo_cliente)throw fail('Datos de rendición inválidos');
   const c=await db.connect();
   try{
@@ -83,13 +90,14 @@ module.exports=function(db){
     medios.push({...m.rows[0],importe,referencia:String(pago.referencia||'')});suma+=centavos(importe);
    }
    if(!Number.isSafeInteger(suma)||suma>centavos(entregado))throw fail('Los cobros superan la mercadería entregada');
-   const v=await c.query(`INSERT INTO distribucion.rendicion_entregas(empresa_id,reparto_id,codigo_cliente,estado,motivo_rechazo_id,motivo_rechazo_nombre,importe_original,importe_entregado,observacion,actualizado_por)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-   ON CONFLICT(empresa_id,reparto_id,codigo_cliente) DO UPDATE SET estado=excluded.estado,motivo_rechazo_id=excluded.motivo_rechazo_id,motivo_rechazo_nombre=excluded.motivo_rechazo_nombre,importe_original=excluded.importe_original,importe_entregado=excluded.importe_entregado,observacion=excluded.observacion,actualizado_por=excluded.actualizado_por,actualizado_en=now() RETURNING *`,
-   [req.actor.empresa_id,b.reparto_id,String(b.codigo_cliente),estado,motivo?.id||null,motivo?.nombre||null,total,entregado,String(b.observacion||'').slice(0,3000),req.actor.id]);
+   if(ayudante===true&&!medios.some(m=>!esCuentaCorrienteSEC(m.nombre)))throw fail('Para marcar Cobrado por el ayudante, registrá al menos un pago recibido. La cuenta corriente no es dinero cobrado.');
+   const v=await c.query(`INSERT INTO distribucion.rendicion_entregas(empresa_id,reparto_id,codigo_cliente,estado,motivo_rechazo_id,motivo_rechazo_nombre,importe_original,importe_entregado,observacion,actualizado_por,cobrado_por_ayudante)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,coalesce($11::boolean,false))
+   ON CONFLICT(empresa_id,reparto_id,codigo_cliente) DO UPDATE SET estado=excluded.estado,motivo_rechazo_id=excluded.motivo_rechazo_id,motivo_rechazo_nombre=excluded.motivo_rechazo_nombre,importe_original=excluded.importe_original,importe_entregado=excluded.importe_entregado,observacion=excluded.observacion,actualizado_por=excluded.actualizado_por,cobrado_por_ayudante=coalesce($11::boolean,distribucion.rendicion_entregas.cobrado_por_ayudante),actualizado_en=now() RETURNING *`,
+   [req.actor.empresa_id,b.reparto_id,String(b.codigo_cliente),estado,motivo?.id||null,motivo?.nombre||null,total,entregado,String(b.observacion||'').slice(0,3000),req.actor.id,ayudante]);
    await c.query('DELETE FROM distribucion.rendicion_cobros WHERE empresa_id=$1 AND rendicion_entrega_id=$2',[req.actor.empresa_id,v.rows[0].id]);
    for(const pago of medios)await c.query('INSERT INTO distribucion.rendicion_cobros(empresa_id,rendicion_entrega_id,medio_cobranza_id,medio_nombre,medio_clasificacion,importe,referencia,registrado_por) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[req.actor.empresa_id,v.rows[0].id,pago.id,pago.nombre,pago.clasificacion,pago.importe,pago.referencia,req.actor.id]);
-   await c.query('INSERT INTO distribucion.auditoria(empresa_id,actor_id,accion,detalle) VALUES($1,$2,$3,$4)',[req.actor.empresa_id,req.actor.id,'RENDICION_ENTREGA',JSON.stringify({reparto_id:b.reparto_id,codigo_cliente:b.codigo_cliente,estado,importe_entregado:entregado,cobros:medios.length})]);
+   await c.query('INSERT INTO distribucion.auditoria(empresa_id,actor_id,accion,detalle) VALUES($1,$2,$3,$4)',[req.actor.empresa_id,req.actor.id,'RENDICION_ENTREGA',JSON.stringify({reparto_id:b.reparto_id,codigo_cliente:b.codigo_cliente,estado,importe_entregado:entregado,cobros:medios.length,cobrado_por_ayudante:v.rows[0].cobrado_por_ayudante})]);
    await c.query('COMMIT');res.json(v.rows[0]);
   }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
  }));
@@ -129,4 +137,4 @@ module.exports=function(db){
  return router;
 };
 
-module.exports._test={importeEnCentavosSEC};
+module.exports._test={importeEnCentavosSEC,esCuentaCorrienteSEC};
