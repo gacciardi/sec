@@ -95,6 +95,9 @@ router.post('/inicializar',wrap(async(req,res)=>{
 
 }));
 
+const accesoSEC=require('./distribucion-acceso-sec')(db,{master,clave,verifica,hash});
+router.use(accesoSEC);
+
 const attempts=new Map();
 
 router.post('/login',wrap(async(req,res)=>{
@@ -115,7 +118,7 @@ router.post('/login',wrap(async(req,res)=>{
 
 router.use(async(req,res,next)=>{try{
 
- await master.iniciar();const token=(req.get('Authorization')||'').replace(/^Bearer /,'');const r=await db.query(`SELECT m.id,m.usuario_id,m.empresa_id,m.rol FROM distribucion.sesiones s JOIN distribucion.miembros m ON m.id=s.miembro_id JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE s.token_hash=$1 AND s.expira>now() AND m.activo=true AND (e.activo=true OR EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=m.id)) AND u.activo=true AND u.deleted_at IS NULL`,[hash(token)]);if(!r.rowCount)throw error('Iniciar sesión',401);req.actor=r.rows[0];req.actor.es_master=await master.esMaster(req.actor);await master.aplicarContexto(req.actor,req.get('X-SEC-Empresa'));next();
+ await master.iniciar();const token=(req.get('Authorization')||'').replace(/^Bearer /,'');const r=await db.query(`SELECT m.id,m.usuario_id,m.empresa_id,m.rol FROM distribucion.sesiones s JOIN distribucion.miembros m ON m.id=s.miembro_id JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE s.token_hash=$1 AND s.expira>now() AND m.activo=true AND (e.activo=true OR EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=m.id)) AND u.activo=true AND u.deleted_at IS NULL`,[hash(token)]);if(!r.rowCount){req.actor=await accesoSEC.consultaComercial(req);return next();}req.actor=r.rows[0];req.actor.es_master=await master.esMaster(req.actor);await master.aplicarContexto(req.actor,req.get('X-SEC-Empresa'));next();
 
 }catch(e){next(e);}});
 
