@@ -6,6 +6,7 @@ const router=express.Router(),upload=multer({storage:multer.memoryStorage(),limi
 router.use(require('./distribucion-ingreso-conductor')(db));
 const asistenciaMecanica=require('./distribucion-asistencia-mecanica')(db);
 router.use(asistenciaMecanica.publicRouter);
+const master=require('./distribucion-master')(db,alta,audit);
 
 const hash=t=>crypto.createHash('sha256').update(t).digest('hex');
 
@@ -102,17 +103,19 @@ router.post('/login',wrap(async(req,res)=>{
 
  const b=req.body;if(typeof b.clave!=='string'||b.clave.length>128)throw error('Credenciales incorrectas',401);
 
- const r=await db.query(`SELECT m.*,e.codigo FROM distribucion.miembros m JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE e.codigo=$1 AND e.activo=true AND m.legajo=$2 AND m.activo=true AND u.activo=true AND u.deleted_at IS NULL`,[b.empresa,b.legajo]);
+ await master.iniciar();const global=b.master===true||b.master==='SI';
+ const r=await db.query(`SELECT m.*,e.codigo FROM distribucion.miembros m JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE (($3::boolean AND EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=m.id)) OR (NOT $3::boolean AND e.codigo=$1 AND e.activo=true)) AND m.legajo=$2 AND m.activo=true AND u.activo=true AND u.deleted_at IS NULL`,[b.empresa,b.legajo,global]);
 
  const a=r.rows[0];if(!a||!verifica(b.clave,a.clave_hash))throw error('Credenciales incorrectas',401);
 
- const token=crypto.randomBytes(32).toString('hex');await db.query("INSERT INTO distribucion.sesiones VALUES($1,$2,now()+interval '12 hours')",[hash(token),a.id]);res.json({token,usuario:{id:a.id,empresa:a.codigo,rol:a.rol,nombre:a.nombre,apellido:a.apellido,legajo:a.legajo}});
+ const es_master=await master.esMaster(a),empresaElegida=es_master?await master.contexto({codigo:b.empresa}):{id:a.empresa_id,codigo:a.codigo};
+ const token=crypto.randomBytes(32).toString('hex');await db.query("INSERT INTO distribucion.sesiones VALUES($1,$2,now()+interval '12 hours')",[hash(token),a.id]);res.json({token,usuario:{id:a.id,empresa:empresaElegida.codigo,empresa_id:empresaElegida.id,rol:a.rol,nombre:a.nombre,apellido:a.apellido,legajo:a.legajo,es_master}});
 
 }));
 
 router.use(async(req,res,next)=>{try{
 
- const token=(req.get('Authorization')||'').replace(/^Bearer /,'');const r=await db.query(`SELECT m.id,m.usuario_id,m.empresa_id,m.rol FROM distribucion.sesiones s JOIN distribucion.miembros m ON m.id=s.miembro_id JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE s.token_hash=$1 AND s.expira>now() AND m.activo=true AND e.activo=true AND u.activo=true AND u.deleted_at IS NULL`,[hash(token)]);if(!r.rowCount)throw error('Iniciar sesión',401);req.actor=r.rows[0];next();
+ await master.iniciar();const token=(req.get('Authorization')||'').replace(/^Bearer /,'');const r=await db.query(`SELECT m.id,m.usuario_id,m.empresa_id,m.rol FROM distribucion.sesiones s JOIN distribucion.miembros m ON m.id=s.miembro_id JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE s.token_hash=$1 AND s.expira>now() AND m.activo=true AND (e.activo=true OR EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=m.id)) AND u.activo=true AND u.deleted_at IS NULL`,[hash(token)]);if(!r.rowCount)throw error('Iniciar sesión',401);req.actor=r.rows[0];req.actor.es_master=await master.esMaster(req.actor);await master.aplicarContexto(req.actor,req.get('X-SEC-Empresa'));next();
 
 }catch(e){next(e);}});
 
@@ -138,10 +141,11 @@ router.post('/gps-apk/detener',wrap(async(req,res)=>{await db.query('UPDATE dist
 router.get('/me',wrap(async(req,res)=>{res.json(req.actor);}));
 
 const soloAdmin=(req,res,next)=>req.actor.rol==='ADMIN'?next():next(error('Solo el administrador puede gestionar usuarios',403));
-router.use(require('./distribucion-usuarios-claves')(db,clave));
+router.use(master.router);
+router.use(require('./distribucion-usuarios-claves')(db,clave,master.esMaster));
 
 router.get('/usuarios',soloAdmin,wrap(async(req,res)=>{
- const r=await db.query("SELECT id,legajo,nombre,apellido,rol,activo FROM distribucion.miembros WHERE empresa_id=$1 AND rol<>'CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(r.rows);
+ const r=await db.query("SELECT id,legajo,nombre,apellido,rol,activo,EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=distribucion.miembros.id) AS es_master FROM distribucion.miembros WHERE empresa_id=$1 AND rol<>'CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(r.rows);
 }));
 
 router.post('/usuarios',soloAdmin,wrap(async(req,res)=>{
@@ -152,6 +156,7 @@ router.post('/usuarios',soloAdmin,wrap(async(req,res)=>{
 
 router.put('/usuarios/:id',soloAdmin,wrap(async(req,res)=>{
  const b=req.body||{};if(typeof b.activo!=='boolean')throw error('Estado inválido');
+ if(await master.esMaster({empresa_id:req.actor.empresa_id,id:req.params.id})&&!req.actor.es_master)throw error('Solo el Master puede administrar su cuenta',403);
  if(req.params.id===String(req.actor.id)&&!b.activo)throw error('No podés desactivar tu propio acceso');
  const r=await transaction(async c=>{
   const old=await c.query("SELECT id,usuario_id,rol FROM distribucion.miembros WHERE id=$1 AND empresa_id=$2 AND rol<>'CONDUCTOR' FOR UPDATE",[req.params.id,req.actor.empresa_id]);
