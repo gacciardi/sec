@@ -92,6 +92,7 @@ app.use("/cobertura", coberturaRoutes);
 app.use("/pendientes", pendientesRoutes);
 app.use("/mapa", mapaRoutes);
 app.use("/dashboard", dashboardRoutes);
+app.use("/configuracion", require("./routes/distribucion-master").autorizarAdmin(db));
 app.use("/configuracion", configuracionRoutes);
 app.use("/rutas", rutasRoutes);
 app.use("/clientes-extra", clientesExtraRoutes);
