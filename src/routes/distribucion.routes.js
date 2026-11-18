@@ -111,14 +111,14 @@ router.post('/login',wrap(async(req,res)=>{
 
  const a=r.rows[0];if(!a||!verifica(b.clave,a.clave_hash))throw error('Credenciales incorrectas',401);
 
- const es_master=await master.esMaster(a),empresaElegida=es_master?await master.contexto({codigo:b.empresa}):{id:a.empresa_id,codigo:a.codigo};
- const token=crypto.randomBytes(32).toString('hex');await db.query("INSERT INTO distribucion.sesiones VALUES($1,$2,now()+interval '12 hours')",[hash(token),a.id]);res.json({token,usuario:{id:a.id,empresa:empresaElegida.codigo,empresa_id:empresaElegida.id,rol:a.rol,nombre:a.nombre,apellido:a.apellido,legajo:a.legajo,es_master}});
+ const es_master=await master.esMaster(a),sectores=await accesoSEC.permisos.resolver({...a,empresa:a.codigo,es_master}),empresaElegida=es_master?await master.contexto({codigo:b.empresa}):{id:a.empresa_id,codigo:a.codigo};
+ const token=crypto.randomBytes(32).toString('hex');await db.query("INSERT INTO distribucion.sesiones VALUES($1,$2,now()+interval '12 hours')",[hash(token),a.id]);res.json({token,usuario:{id:a.id,empresa:empresaElegida.codigo,empresa_id:empresaElegida.id,rol:a.rol,nombre:a.nombre,apellido:a.apellido,legajo:a.legajo,es_master,sectores}});
 
 }));
 
 router.use(async(req,res,next)=>{try{
 
- await master.iniciar();const token=(req.get('Authorization')||'').replace(/^Bearer /,'');const r=await db.query(`SELECT m.id,m.usuario_id,m.empresa_id,m.rol FROM distribucion.sesiones s JOIN distribucion.miembros m ON m.id=s.miembro_id JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE s.token_hash=$1 AND s.expira>now() AND m.activo=true AND (e.activo=true OR EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=m.id)) AND u.activo=true AND u.deleted_at IS NULL`,[hash(token)]);if(!r.rowCount){req.actor=await accesoSEC.consultaComercial(req);return next();}req.actor=r.rows[0];req.actor.es_master=await master.esMaster(req.actor);await master.aplicarContexto(req.actor,req.get('X-SEC-Empresa'));next();
+ await master.iniciar();const token=(req.get('Authorization')||'').replace(/^Bearer /,'');const r=await db.query(`SELECT m.id,m.usuario_id,m.empresa_id,m.rol,m.nombre,m.apellido,e.codigo AS empresa FROM distribucion.sesiones s JOIN distribucion.miembros m ON m.id=s.miembro_id JOIN distribucion.empresas e ON e.id=m.empresa_id JOIN public.usuarios u ON u.id=m.usuario_id WHERE s.token_hash=$1 AND s.expira>now() AND m.activo=true AND (e.activo=true OR EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=m.id)) AND u.activo=true AND u.deleted_at IS NULL`,[hash(token)]);if(!r.rowCount){req.actor=await accesoSEC.consultaComercial(req);return next();}req.actor=r.rows[0];req.actor.es_master=await master.esMaster(req.actor);req.actor.sectores=await accesoSEC.permisos.resolver(req.actor);if(!req.actor.es_master&&!req.actor.sectores.includes('DISTRIBUCION')){req.actor=await accesoSEC.consultaComercial(req);return next();}await master.aplicarContexto(req.actor,req.get('X-SEC-Empresa'));next();
 
 }catch(e){next(e);}});
 
@@ -148,12 +148,12 @@ router.use(master.router);
 router.use(require('./distribucion-usuarios-claves')(db,clave,master.esMaster));
 
 router.get('/usuarios',soloAdmin,wrap(async(req,res)=>{
- const r=await db.query("SELECT id,legajo,nombre,apellido,rol,activo,EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=distribucion.miembros.id) AS es_master FROM distribucion.miembros WHERE empresa_id=$1 AND rol<>'CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(r.rows);
+ const r=await db.query("SELECT id,usuario_id,legajo,nombre,apellido,rol,activo,EXISTS(SELECT 1 FROM distribucion.administrador_master_global a WHERE a.miembro_id=distribucion.miembros.id) AS es_master FROM distribucion.miembros WHERE empresa_id=$1 AND rol<>'CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(await accesoSEC.permisos.listar(r.rows.map(u=>({...u,sector:'DISTRIBUCION'})),req.actor.empresa_codigo||req.actor.empresa));
 }));
 
 router.post('/usuarios',soloAdmin,wrap(async(req,res)=>{
- const b=req.body||{};if(!['ADMIN','SUPERVISOR','OPERADOR','MECANICO'].includes(b.rol))throw error('Perfil inválido');
- const r=await transaction(async c=>{const m=await alta(c,req.actor.empresa_id,b,b.rol);await audit(c,req.actor,'ALTA_USUARIO',{id:m.id,legajo:m.legajo,rol:m.rol});return m;});
+ const b=req.body||{};accesoSEC.permisos.validar(b.sectores);await accesoSEC.permisos.iniciar();if(!['ADMIN','SUPERVISOR','OPERADOR','MECANICO'].includes(b.rol))throw error('Perfil inválido');
+ const r=await transaction(async c=>{const m=await alta(c,req.actor.empresa_id,b,b.rol);const persona=await c.query('SELECT usuario_id FROM distribucion.miembros WHERE id=$1',[m.id]);await accesoSEC.permisos.guardar(c,req.actor,persona.rows[0].usuario_id,req.actor.empresa_codigo||req.actor.empresa,b.sectores);await audit(c,req.actor,'ALTA_USUARIO',{id:m.id,legajo:m.legajo,rol:m.rol});return m;});
  res.status(201).json(r);
 }));
 

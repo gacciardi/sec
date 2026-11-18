@@ -3,7 +3,7 @@ const db = require("../config/database");
 
 const router = express.Router();
 router.use(require('./usuarios-administracion-acceso')(db));
-router.get('/administracion',async(req,res)=>{try{const a=req.administracionSEC,r=await db.query(`SELECT id,nombre,apellido,email,rol,legajo,activo,hora_alerta_login,alerta_login_activa FROM public.usuarios WHERE deleted_at IS NULL AND ($2::boolean OR (empresa_id=$1 AND sector_id IN(SELECT id FROM public.sectores WHERE empresa_id=$1 AND upper(codigo)='COMERCIAL' AND activo=true))) ORDER BY rol,apellido,nombre`,[a.empresa_publica_id,!!a.es_master]);res.set('Cache-Control','no-store').json(r.rows);}catch{res.status(500).json({error:'No se pudo consultar usuarios'});}});
+router.get('/administracion',async(req,res)=>{try{const a=req.administracionSEC,r=await db.query(`SELECT u.id,u.id AS usuario_id,u.nombre,u.apellido,u.email,u.rol,u.legajo,u.activo,u.hora_alerta_login,u.alerta_login_activa,e.codigo AS empresa_codigo,(u.empresa_id IS NULL) AS sin_empresa,upper(s.codigo) AS sector,EXISTS(SELECT 1 FROM distribucion.administrador_master_global am JOIN distribucion.miembros m ON m.id=am.miembro_id WHERE m.usuario_id=u.id) AS es_master FROM public.usuarios u LEFT JOIN public.empresas e ON e.id=u.empresa_id LEFT JOIN public.sectores s ON s.id=u.sector_id WHERE u.deleted_at IS NULL AND (u.empresa_id=$1 OR ($2::boolean AND u.empresa_id IS NULL)) AND ($2::boolean OR upper(s.codigo)='COMERCIAL' OR EXISTS(SELECT 1 FROM distribucion.permisos_sectores_sec p WHERE p.usuario_id=u.id AND 'COMERCIAL'=ANY(p.sectores))) ORDER BY u.rol,u.apellido,u.nombre`,[a.empresa_publica_id,!!a.es_master]);const filas=await require('./distribucion-permisos-sectores')(db).listar(r.rows,a.empresa_codigo||a.empresa);res.set('Cache-Control','no-store').json(filas);}catch{res.status(500).json({error:'No se pudo consultar usuarios'});}});
 router.use('/:id',require('./distribucion-master').protegerPersona(db));
 
 /*
@@ -555,7 +555,9 @@ CREAR USUARIO
 */
 
 router.post("/", async (req, res) => {
+  let c;
   try {
+    c=await db.connect();await c.query("BEGIN");
     const {
       nombre,
       apellido,
@@ -567,7 +569,7 @@ router.post("/", async (req, res) => {
     } = req.body;
 
     const result =
-      await db.query(
+      await c.query(
         `
         INSERT INTO usuarios (
           nombre,
@@ -614,6 +616,8 @@ router.post("/", async (req, res) => {
         ]
       );
 
+    await require('./distribucion-permisos-sectores')(db).guardar(c,req.administracionSEC,result.rows[0].id,req.administracionSEC.empresa_codigo||req.administracionSEC.empresa,req.administracionSEC.sectoresParaCrear);
+    await c.query('COMMIT');
     res.status(201).json({
       mensaje:
         "Usuario creado correctamente",
@@ -623,6 +627,7 @@ router.post("/", async (req, res) => {
     });
 
   } catch (error) {
+    if(c)await c.query("ROLLBACK");
     res.status(500).json({
       error:
         "Error al crear usuario",
@@ -630,14 +635,8 @@ router.post("/", async (req, res) => {
       detalle:
         error.message
     });
-  }
+  } finally {if(c)c.release();}
 });
-
-/*
-=================================
-ACTUALIZAR USUARIO
-=================================
-*/
 
 router.put("/:id", async (req, res) => {
   try {
