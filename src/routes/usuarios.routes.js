@@ -2,6 +2,8 @@ const express = require("express");
 const db = require("../config/database");
 
 const router = express.Router();
+router.use(require('./usuarios-administracion-acceso')(db));
+router.get('/administracion',async(req,res)=>{try{const a=req.administracionSEC,r=await db.query(`SELECT id,nombre,apellido,email,rol,legajo,activo,hora_alerta_login,alerta_login_activa FROM public.usuarios WHERE deleted_at IS NULL AND ($2::boolean OR (empresa_id=$1 AND sector_id IN(SELECT id FROM public.sectores WHERE empresa_id=$1 AND upper(codigo)='COMERCIAL' AND activo=true))) ORDER BY rol,apellido,nombre`,[a.empresa_publica_id,!!a.es_master]);res.set('Cache-Control','no-store').json(r.rows);}catch{res.status(500).json({error:'No se pudo consultar usuarios'});}});
 router.use('/:id',require('./distribucion-master').protegerPersona(db));
 
 /*
@@ -575,7 +577,9 @@ router.post("/", async (req, res) => {
           legajo,
           activo,
           hora_alerta_login,
-          alerta_login_activa
+          alerta_login_activa,
+          empresa_id,
+          sector_id
         )
         VALUES (
           $1,
@@ -585,7 +589,9 @@ router.post("/", async (req, res) => {
           $5,
           true,
           $6,
-          $7
+          $7,
+          $8,
+          $9
         )
         RETURNING *
         `,
@@ -602,7 +608,9 @@ router.post("/", async (req, res) => {
           alerta_login_activa ===
             undefined
             ? true
-            : alerta_login_activa
+            : alerta_login_activa,
+          req.administracionSEC.empresa_publica_id,
+          req.administracionSEC.sector_id
         ]
       );
 
