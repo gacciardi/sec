@@ -138,6 +138,7 @@ router.post('/gps-apk/detener',wrap(async(req,res)=>{await db.query('UPDATE dist
 router.get('/me',wrap(async(req,res)=>{res.json(req.actor);}));
 
 const soloAdmin=(req,res,next)=>req.actor.rol==='ADMIN'?next():next(error('Solo el administrador puede gestionar usuarios',403));
+router.use(require('./distribucion-usuarios-claves')(db,clave));
 
 router.get('/usuarios',soloAdmin,wrap(async(req,res)=>{
  const r=await db.query("SELECT id,legajo,nombre,apellido,rol,activo FROM distribucion.miembros WHERE empresa_id=$1 AND rol<>'CONDUCTOR' ORDER BY apellido,nombre",[req.actor.empresa_id]);res.json(r.rows);
