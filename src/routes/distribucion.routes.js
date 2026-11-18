@@ -224,9 +224,7 @@ router.post('/importar-horarios',admin,upload.single('archivo'),wrap(async(req,r
  if(req.body.confirmar!=='SI')throw error('Primero validá y confirmá la importación');
  await require('./distribucion-ruteo-horarios').asegurarHorarios(db);
  await transaction(async c=>{
-  for(const x of cambios){
-   await c.query(`INSERT INTO distribucion.horarios_recepcion(empresa_id,codigo_cliente,dia_semana,apertura_1,cierre_1,apertura_2,cierre_2,minutos_descarga) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(empresa_id,codigo_cliente,dia_semana) DO UPDATE SET apertura_1=EXCLUDED.apertura_1,cierre_1=EXCLUDED.cierre_1,apertura_2=EXCLUDED.apertura_2,cierre_2=EXCLUDED.cierre_2,minutos_descarga=EXCLUDED.minutos_descarga,actualizado_en=now()`,[req.actor.empresa_id,x.codigo,x.dia,x.turnos[0][0],x.turnos[0][1],x.turnos[1]?.[0]||null,x.turnos[1]?.[1]||null,x.minutos]);
-  }
+  await require('./distribucion-horarios-guardar')(c,req.actor.empresa_id,cambios);
   await audit(c,req.actor,'IMPORTAR_HORARIOS',{filas:filas.length,clientes:new Set(cambios.map(x=>x.codigo)).size});
  });
  res.json({ok:true,clientes:new Set(cambios.map(x=>x.codigo)).size,horarios:cambios.length});
