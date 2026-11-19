@@ -240,11 +240,12 @@ router.post('/importar',operacion,upload.single('archivo'),wrap(async(req,res)=>
  const out=importador.pedidos(req.file.buffer,req.actor.empresa_id,{});
  if(out.errores.length)return res.status(422).json({error:'Archivo sin importar',filas:out.errores});
  for(const p of out.pedidos)p.fecha=fechaManual;
- if(req.body.solo_validar==='1')return res.json({validado:true,pedidos:out.pedidos.length,despachos:new Set(out.pedidos.map(p=>p.despacho||'SIN_DESPACHO')).size,fecha_entrega_real:fechaManual});
+ const aditiva=require('./distribucion-importacion-aditiva');
+ if(req.body.solo_validar==='1')return res.json({validado:true,pedidos:out.pedidos.length,despachos:new Set(out.pedidos.map(p=>p.despacho||'SIN_DESPACHO')).size,fecha_entrega_real:fechaManual,...await aditiva.evaluarPedidosSEC(db,req.actor.empresa_id,out.pedidos)});
 
  const grouped=new Map();for(const p of out.pedidos){const k=p.fecha+'|'+(p.despacho||'SIN_DESPACHO');const g=grouped.get(k)||new Set();if(p.conductor)g.add(p.conductor);grouped.set(k,g);}if([...grouped.values()].some(v=>v.size>1))throw error('Un despacho tiene varios conductores: revisar el archivo');
 
- await transaction(async c=>{for(const p of out.pedidos){const reparto=await c.query(`INSERT INTO distribucion.repartos(empresa_id,fecha,despacho,conductor_nombre) VALUES($1,$2,$3,$4) ON CONFLICT(empresa_id,fecha,despacho) DO UPDATE SET conductor_nombre=excluded.conductor_nombre RETURNING id`,[req.actor.empresa_id,p.fecha,p.despacho||'SIN_DESPACHO',p.conductor]);await c.query(`INSERT INTO distribucion.pedidos(empresa_id,reparto_id,fecha,numero,codigo_cliente,nombre_cliente,cantidad,importe) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(empresa_id,fecha,numero) DO UPDATE SET reparto_id=excluded.reparto_id,codigo_cliente=excluded.codigo_cliente,nombre_cliente=excluded.nombre_cliente,cantidad=excluded.cantidad,importe=excluded.importe`,[req.actor.empresa_id,reparto.rows[0].id,p.fecha,p.pedido,p.codigo,p.cliente,p.cantidad,p.importe]);}await audit(c,req.actor,'IMPORTACION_PEDIDOS',{cantidad:out.pedidos.length,fecha_entrega_real:fechaManual});});res.json({importados:out.pedidos.length});
+ const resultado=await transaction(async c=>{const r=await aditiva.agregarPedidosSEC(c,req.actor.empresa_id,out.pedidos);await audit(c,req.actor,'IMPORTACION_PEDIDOS',{...r,fecha_entrega_real:fechaManual,modo:'AGREGAR_SIN_REEMPLAZAR'});return r;});res.json(resultado);
 
 }));
 
@@ -288,12 +289,12 @@ router.post('/asigno/importar',operacion,upload.single('archivo'),wrap(async(req
   if(!vehiculo)motivos.push('Interno no encontrado en Vehículos');
   if(vehiculo?.tipo==='tractor')motivos.push('Tractor: requiere asignar semirremolque manualmente');
   if(reparto&&(reparto.conductor_id||reparto.principal_id||reparto.semi_id))motivos.push('Ya tiene asignación: no se sobrescribe');
-  return {...x,estado:motivos.length?'pendiente':'asignable',motivos,conductor_id:conductor?.id,principal_id:vehiculo?.id,reparto_id:reparto?.id};
+  return {...x,estado:reparto&&(reparto.conductor_id||reparto.principal_id||reparto.semi_id)?'conservada':motivos.length?'pendiente':'asignable',motivos,conductor_id:conductor?.id,principal_id:vehiculo?.id,reparto_id:reparto?.id};
  });
  const enAsigno=new Set(registros.map(x=>x.despacho));
- for(const r of repartos.rows)if(!enAsigno.has(String(r.despacho)))detalle.push({despacho:String(r.despacho),interno:'',legajo:'',conductor:'',estado:'pendiente',motivos:['Despacho de Pedidos ausente en Asigno']});
- const asignables=detalle.filter(x=>x.estado==='asignable');
- if(req.body.solo_validar==='1')return res.json({fecha,asignables:asignables.length,pendientes:detalle.length-asignables.length,detalle:detalle.map(({conductor_id,principal_id,reparto_id,...x})=>x)});
+ for(const r of repartos.rows)if(!enAsigno.has(String(r.despacho))&&!r.conductor_id&&!r.principal_id&&!r.semi_id)detalle.push({despacho:String(r.despacho),interno:'',legajo:'',conductor:'',estado:'pendiente',motivos:['Despacho de Pedidos ausente en Asigno']});
+ const asignables=detalle.filter(x=>x.estado==='asignable'),conservadas=detalle.filter(x=>x.estado==='conservada').length;
+ if(req.body.solo_validar==='1')return res.json({fecha,asignables:asignables.length,conservadas,pendientes:detalle.filter(x=>x.estado==='pendiente').length,detalle:detalle.map(({conductor_id,principal_id,reparto_id,...x})=>x)});
  let aplicados=0;
  await transaction(async c=>{
   for(const x of asignables){
@@ -302,7 +303,7 @@ router.post('/asigno/importar',operacion,upload.single('archivo'),wrap(async(req
   }
   await audit(c,req.actor,'IMPORTACION_ASIGNO',{fecha,aplicados,pendientes:detalle.length-asignables.length});
  });
- res.json({fecha,aplicados,pendientes:detalle.length-aplicados,detalle:detalle.map(({conductor_id,principal_id,reparto_id,...x})=>x)});
+ res.json({fecha,aplicados,conservadas,pendientes:detalle.filter(x=>x.estado==='pendiente').length+(asignables.length-aplicados),detalle:detalle.map(({conductor_id,principal_id,reparto_id,...x})=>x)});
 }));
 
 router.get('/vehiculos',(req,res,next)=>['ADMIN','SUPERVISOR','OPERADOR','MECANICO'].includes(req.actor.rol)?next():next(error('Acceso restringido',403)),wrap(async(req,res)=>{const r=await db.query('SELECT id,interno,patente,tipo,activo FROM distribucion.vehiculos WHERE empresa_id=$1 ORDER BY interno',[req.actor.empresa_id]);res.json(r.rows);}));

@@ -48,14 +48,14 @@ module.exports=db=>{
  }));
  router.get('/oficina/solicitudes',ready,wrap(async(req,res)=>{
   const a=req.actor,esConductor=a.rol==='CONDUCTOR';if(!esConductor&&!['ADMIN','SUPERVISOR','OPERADOR'].includes(a.rol))throw fail('Acceso restringido',403);
-  const pendientes=req.query.pendientes==='1';
-  const condicion=pendientes?(esConductor?"AND (s.estado<>'RESPONDIDA' OR s.leida_conductor_en IS NULL)":"AND s.estado IN ('ENVIADA','CONFIRMADA')") : "AND (s.creada_en>now()-interval '30 days' OR s.estado<>'RESPONDIDA' OR s.leida_conductor_en IS NULL)";
+  const pendientes=req.query.pendientes==='1',recepcion=!esConductor&&req.query.recepcion==='1';
+  const condicion=recepcion?"AND (s.estado IN ('ENVIADA','CONFIRMADA') OR s.creada_en>now()-interval '24 hours')":pendientes?(esConductor?"AND (s.estado<>'RESPONDIDA' OR s.leida_conductor_en IS NULL)":"AND s.estado IN ('ENVIADA','CONFIRMADA')") : "AND (s.creada_en>now()-interval '30 days' OR s.estado<>'RESPONDIDA' OR s.leida_conductor_en IS NULL)";
   const r=await db.query(`SELECT s.*,m.nombre||' '||m.apellido AS conductor,r.despacho,v.interno,v.patente,o.nombre||' '||o.apellido AS respondida_nombre
    FROM distribucion.oficina_solicitudes s JOIN distribucion.miembros m ON m.id=s.conductor_id AND m.empresa_id=s.empresa_id
    JOIN distribucion.repartos r ON r.id=s.reparto_id AND r.empresa_id=s.empresa_id
    LEFT JOIN distribucion.vehiculos v ON v.id=r.principal_id AND v.empresa_id=r.empresa_id
    LEFT JOIN distribucion.miembros o ON o.id=s.respondida_por AND o.empresa_id=s.empresa_id
-   WHERE s.empresa_id=$1 AND ($2::uuid IS NULL OR s.conductor_id=$2::uuid) ${condicion} ORDER BY s.creada_en DESC ${pendientes?'':'LIMIT 500'}`,[a.empresa_id,esConductor?a.id:null]);res.set('Cache-Control','no-store').json(r.rows);
+   WHERE s.empresa_id=$1 AND ($2::uuid IS NULL OR s.conductor_id=$2::uuid) ${condicion} ORDER BY s.creada_en DESC ${pendientes||recepcion?'':'LIMIT 500'}`,[a.empresa_id,esConductor?a.id:null]);res.set('Cache-Control','no-store').json(r.rows);
  }));
  router.post('/oficina/solicitudes/:id/confirmar',oficina,ready,wrap(async(req,res)=>{
   if(!id(req.params.id))throw fail('Solicitud inválida');const r=await transaccion(async c=>{const r=await c.query(`UPDATE distribucion.oficina_solicitudes SET estado='CONFIRMADA',confirmada_en=now(),confirmada_por=$3 WHERE empresa_id=$1 AND id=$2 AND estado='ENVIADA' RETURNING *`,[req.actor.empresa_id,req.params.id,req.actor.id]);if(!r.rowCount)throw fail('Solicitud ya confirmada o respondida. Actualizá la lista.',409);await auditar(c,req.actor,'CONFIRMAR_LLAMADO_OFICINA',{solicitud_id:req.params.id});return r.rows[0];});res.json(r);
