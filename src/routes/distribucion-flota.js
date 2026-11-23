@@ -44,5 +44,6 @@ module.exports=db=>{
    SELECT $1,v.id,$3::date,$4,$5,$6,$7,$8,$9 FROM distribucion.vehiculos v WHERE v.id=$2 AND v.empresa_id=$1 RETURNING *`,[req.actor.empresa_id,b.vehiculo_id,b.fecha,litros,km,od,costo,String(b.observacion||'').slice(0,1000),req.actor.id]);
   if(!r.rowCount)throw fail('Vehículo no encontrado',404);res.status(201).json(r.rows[0]);
  }));
+ router.use(require('./distribucion-lavados')(db));
  return router;
 };
