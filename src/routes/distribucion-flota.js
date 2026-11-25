@@ -45,5 +45,38 @@ module.exports=db=>{
   if(!r.rowCount)throw fail('Vehículo no encontrado',404);res.status(201).json(r.rows[0]);
  }));
  router.use(require('./distribucion-lavados')(db));
+ router.use(crearCamionesCusatSEC(db));
  return router;
 };
+
+// Posiciones GPS de la flota: consulta privada de Cusat, aislada por empresa.
+const https=require('node:https');
+const fail=(s,status=503)=>Object.assign(Error(s),{status});
+const patente=v=>String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+function fechaReporte(v){if(typeof v!=='string')return null;const s=v.trim();if(!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(s))return null;const d=new Date(s.replace(' ','T')+'-03:00');return Number.isFinite(d.getTime())?d.toISOString():null;}
+function presentar(v,d,ahora){
+ const lat=d?.ult_latitud==null||String(d.ult_latitud).trim()===''?NaN:Number(d.ult_latitud),lng=d?.ult_longitud==null||String(d.ult_longitud).trim()===''?NaN:Number(d.ult_longitud),gps=Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180&&(lat!==0||lng!==0),reporte=fechaReporte(d?.ult_reporte),edad=reporte?(ahora-Date.parse(reporte))/60000:null;
+ return {id:v.id,interno:v.interno,patente:v.patente,tipo:v.tipo,origen:'CUSAT',interno_cusat:typeof d?.nombre==='string'?d.nombre.slice(0,80):null,reporte,estado:!d?'SIN_REPORTE':!gps?'SIN_GPS':edad===null||edad< -5?'SIN_FECHA':edad>15?'ANTIGUO':'RECIENTE',latitud:gps?lat:null,longitud:gps?lng:null,velocidad:d?.ult_velocidad!=null&&Number.isFinite(Number(d.ult_velocidad))&&Number(d.ult_velocidad)>=0?Number(d.ult_velocidad):null,domicilio:typeof d?.domicilio==='string'?d.domicilio.slice(0,500):''};
+}
+function consultar(patentes,config){return new Promise((resolve,reject)=>{
+ const body=JSON.stringify({patentes,cercania:false,domicilio:true,apiCode:config.apiCode,phone:config.phone});
+ const req=https.request('https://gps.cusat.com.ar/ws/v2/servicios',{method:'GET',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},res=>{let raw='';res.on('data',c=>{raw+=c;if(Buffer.byteLength(raw)>2e6){req.destroy();reject(fail('La respuesta de Cusat superó el tamaño permitido.'));}});res.on('error',()=>reject(fail('Se interrumpió la respuesta de Cusat.')));res.on('end',()=>{try{const r=JSON.parse(raw);if(res.statusCode!==200||r.code!==0)throw Error();if(r.data!=null&&(typeof r.data!=='object'||Array.isArray(r.data)))throw Error();resolve(r.data||{});}catch{reject(fail('Cusat no pudo devolver las posiciones. Volvé a consultar.'));}});});req.setTimeout(15000,()=>req.destroy());req.on('error',()=>reject(fail('No se pudo conectar con Cusat. Volvé a consultar.')));req.end(body);
+ });}
+function crearCamionesCusatSEC(db,options={}){
+ const r=require('express').Router(),cache=new Map(),pendientes=new Map(),env=options.env||process.env,obtener=options.consultar||consultar,reloj=options.ahora||Date.now;
+ r.get('/camiones/cusat',async(q,s,n)=>{try{
+  s.set('Cache-Control','no-store');if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(q.actor?.rol)||q.actor?.consulta_comercial)throw fail('Acceso restringido a Distribución.',403);
+  const empresa=await db.query('SELECT codigo FROM distribucion.empresas WHERE id=$1 AND activo=true',[q.actor.empresa_id]);
+  if(!empresa.rowCount||!env.CUSAT_EMPRESA_CODIGO||String(empresa.rows[0].codigo).toLowerCase()!==env.CUSAT_EMPRESA_CODIGO.toLowerCase())throw fail('Esta empresa todavía no tiene conexión con Cusat.',409);
+  if(!env.CUSAT_API_CODE||!env.CUSAT_PHONE)throw fail('Falta configurar la conexión privada de Cusat para esta empresa.',409);
+  const unidades=await db.query("SELECT id,interno,patente,tipo FROM distribucion.vehiculos WHERE empresa_id=$1 AND activo=true AND tipo IN('camion','tractor') ORDER BY interno,id",[q.actor.empresa_id]);
+  const patentes=[...new Set(unidades.rows.map(v=>patente(v.patente)).filter(p=>/^[A-Z0-9]{5,10}$/.test(p)))];if(patentes.length>500)throw fail('La flota supera las 500 unidades admitidas en esta consulta.',409);
+  if(!patentes.length)return s.json({origen:'CUSAT',consultado_en:new Date(reloj()).toISOString(),unidades:unidades.rows.map(v=>presentar(v,null,reloj()))});
+  const key=q.actor.empresa_id+':'+patentes.join(','),anterior=cache.get(key);let dato;
+  if(anterior&&reloj()-anterior.instante<60000)dato=anterior;
+  else {if(!pendientes.has(key))pendientes.set(key,(async()=>{const datos={};for(let i=0;i<patentes.length;i+=50){const lote=patentes.slice(i,i+50),respuesta=await obtener(lote,{apiCode:env.CUSAT_API_CODE,phone:env.CUSAT_PHONE});for(const [p,d] of Object.entries(respuesta))if(lote.includes(patente(p)))datos[patente(p)]=d;}const instante=reloj(),value={datos,instante};cache.clear();cache.set(key,value);return value;})().finally(()=>pendientes.delete(key)));dato=await pendientes.get(key);}
+  s.json({origen:'CUSAT',consultado_en:new Date(dato.instante).toISOString(),unidades:unidades.rows.map(v=>presentar(v,dato.datos[patente(v.patente)],reloj()))});
+ }catch(e){n(e.status?e:fail('No se pudieron consultar los camiones. Volvé a intentar.'));}});
+ return r;
+};
+module.exports._cusat=Object.assign(crearCamionesCusatSEC,{presentar,fechaReporte,patente});
