@@ -45,7 +45,9 @@ module.exports=db=>{
   if(!r.rowCount)throw fail('Vehículo no encontrado',404);res.status(201).json(r.rows[0]);
  }));
  router.use(require('./distribucion-lavados')(db));
- router.use(crearCamionesCusatSEC(db));
+ const cusat=crearCamionesCusatSEC(db);
+ router.use(cusat);
+ router.use(require('./distribucion-seguimiento-cusat')(db,cusat.consultarEmpresa));
  return router;
 };
 
@@ -64,18 +66,23 @@ function consultar(patentes,config){return new Promise((resolve,reject)=>{
  });}
 function crearCamionesCusatSEC(db,options={}){
  const r=require('express').Router(),cache=new Map(),pendientes=new Map(),env=options.env||process.env,obtener=options.consultar||consultar,reloj=options.ahora||Date.now;
- r.get('/camiones/cusat',async(q,s,n)=>{try{
-  s.set('Cache-Control','no-store');if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(q.actor?.rol)||q.actor?.consulta_comercial)throw fail('Acceso restringido a Distribución.',403);
-  const empresa=await db.query('SELECT codigo FROM distribucion.empresas WHERE id=$1 AND activo=true',[q.actor.empresa_id]);
+ async function consultarEmpresa(empresaId){
+  const empresa=await db.query('SELECT codigo FROM distribucion.empresas WHERE id=$1 AND activo=true',[empresaId]);
   if(!empresa.rowCount||!env.CUSAT_EMPRESA_CODIGO||String(empresa.rows[0].codigo).toLowerCase()!==env.CUSAT_EMPRESA_CODIGO.toLowerCase())throw fail('Esta empresa todavía no tiene conexión con Cusat.',409);
   if(!env.CUSAT_API_CODE||!env.CUSAT_PHONE)throw fail('Falta configurar la conexión privada de Cusat para esta empresa.',409);
-  const unidades=await db.query("SELECT id,interno,patente,tipo FROM distribucion.vehiculos WHERE empresa_id=$1 AND activo=true AND tipo IN('camion','tractor') ORDER BY interno,id",[q.actor.empresa_id]);
+  const unidades=await db.query("SELECT id,interno,patente,tipo FROM distribucion.vehiculos WHERE empresa_id=$1 AND activo=true AND tipo IN('camion','tractor') ORDER BY interno,id",[empresaId]);
   const patentes=[...new Set(unidades.rows.map(v=>patente(v.patente)).filter(p=>/^[A-Z0-9]{5,10}$/.test(p)))];if(patentes.length>500)throw fail('La flota supera las 500 unidades admitidas en esta consulta.',409);
-  if(!patentes.length)return s.json({origen:'CUSAT',consultado_en:new Date(reloj()).toISOString(),unidades:unidades.rows.map(v=>presentar(v,null,reloj()))});
-  const key=q.actor.empresa_id+':'+patentes.join(','),anterior=cache.get(key);let dato;
+  if(!patentes.length)return ({origen:'CUSAT',consultado_en:new Date(reloj()).toISOString(),unidades:unidades.rows.map(v=>presentar(v,null,reloj()))});
+  const key=empresaId+':'+patentes.join(','),anterior=cache.get(key);let dato;
   if(anterior&&reloj()-anterior.instante<60000)dato=anterior;
   else {if(!pendientes.has(key))pendientes.set(key,(async()=>{const datos={};for(let i=0;i<patentes.length;i+=50){const lote=patentes.slice(i,i+50),respuesta=await obtener(lote,{apiCode:env.CUSAT_API_CODE,phone:env.CUSAT_PHONE});for(const [p,d] of Object.entries(respuesta))if(lote.includes(patente(p)))datos[patente(p)]=d;}const instante=reloj(),value={datos,instante};cache.clear();cache.set(key,value);return value;})().finally(()=>pendientes.delete(key)));dato=await pendientes.get(key);}
-  s.json({origen:'CUSAT',consultado_en:new Date(dato.instante).toISOString(),unidades:unidades.rows.map(v=>presentar(v,dato.datos[patente(v.patente)],reloj()))});
+  return ({origen:'CUSAT',consultado_en:new Date(dato.instante).toISOString(),unidades:unidades.rows.map(v=>presentar(v,dato.datos[patente(v.patente)],reloj()))});
+
+ }
+ r.consultarEmpresa=consultarEmpresa;
+ r.get('/camiones/cusat',async(q,s,n)=>{try{
+  s.set('Cache-Control','no-store');if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(q.actor?.rol)||q.actor?.consulta_comercial)throw fail('Acceso restringido a Distribución.',403);
+  s.json(await consultarEmpresa(q.actor.empresa_id));
  }catch(e){n(e.status?e:fail('No se pudieron consultar los camiones. Volvé a intentar.'));}});
  return r;
 };
