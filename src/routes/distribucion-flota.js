@@ -53,7 +53,7 @@ module.exports=db=>{
 const https=require('node:https');
 const fail=(s,status=503)=>Object.assign(Error(s),{status});
 const patente=v=>String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-function fechaReporte(v){if(typeof v!=='string')return null;const s=v.trim();if(!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(s))return null;const d=new Date(s.replace(' ','T')+'-03:00');return Number.isFinite(d.getTime())?d.toISOString():null;}
+function fechaReporte(v){if(typeof v!=='string')return null;const s=v.trim();if(!/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(s))return null;const d=new Date(s.replace(' ','T')+'Z');return Number.isFinite(d.getTime())?d.toISOString():null;}
 function presentar(v,d,ahora){
  const lat=d?.ult_latitud==null||String(d.ult_latitud).trim()===''?NaN:Number(d.ult_latitud),lng=d?.ult_longitud==null||String(d.ult_longitud).trim()===''?NaN:Number(d.ult_longitud),gps=Number.isFinite(lat)&&Number.isFinite(lng)&&Math.abs(lat)<=90&&Math.abs(lng)<=180&&(lat!==0||lng!==0),reporte=fechaReporte(d?.ult_reporte),edad=reporte?(ahora-Date.parse(reporte))/60000:null;
  return {id:v.id,interno:v.interno,patente:v.patente,tipo:v.tipo,origen:'CUSAT',interno_cusat:typeof d?.nombre==='string'?d.nombre.slice(0,80):null,reporte,estado:!d?'SIN_REPORTE':!gps?'SIN_GPS':edad===null||edad< -5?'SIN_FECHA':edad>15?'ANTIGUO':'RECIENTE',latitud:gps?lat:null,longitud:gps?lng:null,velocidad:d?.ult_velocidad!=null&&Number.isFinite(Number(d.ult_velocidad))&&Number(d.ult_velocidad)>=0?Number(d.ult_velocidad):null,domicilio:typeof d?.domicilio==='string'?d.domicilio.slice(0,500):''};
