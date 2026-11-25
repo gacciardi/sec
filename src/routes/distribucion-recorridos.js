@@ -18,7 +18,29 @@ module.exports=function(db){
    }await c.query('COMMIT');res.json({ok:true});
   }catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}
  }));
- router.get('/gps',wrap(async(req,res)=>{const r=await db.query(`SELECT g.id,g.conductor_id,g.latitud,g.longitud,g.precision_metros,g.velocidad,g.fecha,m.nombre,m.apellido FROM distribucion.gps g JOIN distribucion.miembros m ON m.id=g.conductor_id AND m.empresa_id=g.empresa_id WHERE g.empresa_id=$1 AND ($2::uuid IS NULL OR g.conductor_id=$2::uuid) AND g.fecha>=coalesce($3::date,current_date)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires' AND g.fecha<(coalesce($3::date,current_date)+1)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires' ORDER BY g.fecha LIMIT 20000`,[req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:req.query.conductor_id||null,req.query.fecha||null]);res.json(r.rows);}));
+ router.get('/gps',wrap(async(req,res)=>{
+  const { actor, query } = req;
+  if (query.preferir_cusat === '1' && query.conductor_id && query.fecha &&
+      ['ADMIN','SUPERVISOR','OPERADOR'].includes(actor.rol) && !actor.consulta_comercial) {
+   const existe = await db.query("SELECT to_regclass('distribucion.cusat_puntos') AS tabla");
+   if (existe.rows[0].tabla) {
+    const cusat = await db.query(`
+     WITH vehiculos AS (
+      SELECT DISTINCT principal_id FROM distribucion.repartos
+      WHERE empresa_id=$1 AND conductor_id=$2 AND fecha=$3::date AND principal_id IS NOT NULL
+     )
+     SELECT p.latitud,p.longitud,p.reporte AS fecha,p.velocidad,'CUSAT' AS origen,v.interno
+     FROM distribucion.cusat_puntos p
+     JOIN vehiculos a ON a.principal_id=p.vehiculo_id
+     JOIN distribucion.vehiculos v ON v.id=p.vehiculo_id AND v.empresa_id=p.empresa_id
+     WHERE p.empresa_id=$1 AND (SELECT count(*) FROM vehiculos)=1
+       AND p.reporte >= $3::date::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'
+       AND p.reporte < ($3::date+1)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires'
+     ORDER BY p.reporte LIMIT 20000`, [actor.empresa_id,query.conductor_id,query.fecha]);
+    if (cusat.rows.length >= 2) return res.json(cusat.rows);
+   }
+  }
+  const r=await db.query(`SELECT g.id,g.conductor_id,g.latitud,g.longitud,g.precision_metros,g.velocidad,g.fecha,m.nombre,m.apellido FROM distribucion.gps g JOIN distribucion.miembros m ON m.id=g.conductor_id AND m.empresa_id=g.empresa_id WHERE g.empresa_id=$1 AND ($2::uuid IS NULL OR g.conductor_id=$2::uuid) AND g.fecha>=coalesce($3::date,current_date)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires' AND g.fecha<(coalesce($3::date,current_date)+1)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires' ORDER BY g.fecha LIMIT 20000`,[req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:req.query.conductor_id||null,req.query.fecha||null]);res.json(r.rows);}));
  router.get('/visitas',wrap(async(req,res)=>{const r=await db.query(`SELECT v.*,r.fecha,r.despacho,r.conductor_id,p.nombre_cliente,coalesce(t.segundos,0) AS permanencia_segundos FROM distribucion.visitas v JOIN distribucion.repartos r ON r.id=v.reparto_id AND r.empresa_id=v.empresa_id LEFT JOIN LATERAL(SELECT nombre_cliente FROM distribucion.pedidos WHERE empresa_id=v.empresa_id AND reparto_id=v.reparto_id AND codigo_cliente=v.codigo_cliente LIMIT 1)p ON true LEFT JOIN LATERAL(SELECT sum(extract(epoch from(salida-entrada))) AS segundos FROM distribucion.permanencias WHERE empresa_id=v.empresa_id AND visita_id=v.id AND salida IS NOT NULL)t ON true WHERE v.empresa_id=$1 AND ($2::uuid IS NULL OR r.conductor_id=$2::uuid) AND ($3::date IS NULL OR r.fecha=$3::date) ORDER BY v.llegada`,[req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null,req.query.fecha||null]);res.json(r.rows);}));
  router.post('/visitas',wrap(async(req,res)=>{const b=req.body;if(!['VISITADO','ENTREGADO','CERRADO','INCIDENCIA'].includes(b.estado)||typeof b.codigo_cliente!=='string'||String(b.observacion||'').length>3000)return res.status(400).json({error:'Resultado inválido'});const c=await db.connect();try{await c.query('BEGIN');const r=await c.query('SELECT id FROM distribucion.repartos WHERE id=$1 AND empresa_id=$2 AND ($3::uuid IS NULL OR conductor_id=$3::uuid) FOR UPDATE',[b.reparto_id,req.actor.empresa_id,req.actor.rol==='CONDUCTOR'?req.actor.id:null]);if(!r.rowCount)throw Object.assign(Error('Reparto no disponible'),{status:403});const p=await c.query('SELECT 1 FROM distribucion.pedidos WHERE reparto_id=$1 AND empresa_id=$2 AND codigo_cliente=$3',[b.reparto_id,req.actor.empresa_id,b.codigo_cliente]);if(!p.rowCount)throw Object.assign(Error('Cliente no pertenece al reparto'),{status:400});const v=await c.query(`INSERT INTO distribucion.visitas(empresa_id,reparto_id,codigo_cliente,estado,observacion) VALUES($1,$2,$3,$4,$5) ON CONFLICT(empresa_id,reparto_id,codigo_cliente) DO UPDATE SET estado=excluded.estado,observacion=excluded.observacion,actualizado=now() RETURNING *`,[req.actor.empresa_id,b.reparto_id,b.codigo_cliente,b.estado,b.observacion||'']);await c.query('INSERT INTO distribucion.auditoria(empresa_id,actor_id,accion,detalle) VALUES($1,$2,$3,$4)',[req.actor.empresa_id,req.actor.id,'RESULTADO_ENTREGA',JSON.stringify({visita_id:v.rows[0].id,estado:b.estado})]);await c.query('COMMIT');res.json(v.rows[0]);}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}));
  const photo=multer({storage:multer.memoryStorage(),limits:{fileSize:5*1024*1024}});
