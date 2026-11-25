@@ -3,7 +3,8 @@ function distancia(a,b,c,d){const r=x=>x*Math.PI/180,t=Math.sin(r(c-a)/2)**2+Mat
 function cercano(u,p,ahora){
  if(!u.reporte||u.latitud==null||u.longitud==null||p.latitud==null||p.longitud==null)return false;
  const edad=ahora-Date.parse(u.reporte),radio=Number(p.radio_geocerca)>0?Number(p.radio_geocerca):30;
- return Number.isFinite(edad)&&edad>=0&&edad<=300000&&Number.isFinite(Number(p.latitud))&&Number.isFinite(Number(p.longitud))&&distancia(u.latitud,u.longitud,Number(p.latitud),Number(p.longitud))<=radio;
+ const dia=x=>new Date(x).toLocaleDateString('en-CA',{timeZone:'America/Argentina/Buenos_Aires'});
+ return Number.isFinite(edad)&&edad>=0&&edad<=300000&&dia(u.reporte)===dia(ahora)&&Number.isFinite(Number(p.latitud))&&Number.isFinite(Number(p.longitud))&&distancia(u.latitud,u.longitud,Number(p.latitud),Number(p.longitud))<=radio;
 }
 module.exports=function(db,consultar,options={}){
  const router=express.Router(),env=options.env||process.env,reloj=options.ahora||Date.now;let preparado=null,ocupado=false;
