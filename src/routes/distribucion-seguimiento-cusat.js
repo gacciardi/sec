@@ -61,6 +61,6 @@ module.exports=function(db,consultar,options={}){
    db.query('SELECT ultima_consulta,ultimo_exito,error FROM distribucion.cusat_seguimiento_estado WHERE empresa_id=$1',[q.actor.empresa_id]),fuentesGPS.fuentes(db,q.actor.empresa_id,env)]);
   s.set('Cache-Control','no-store').json({fuentes,puntos:puntos.rows,pasos:pasos.rows,estado:estado.rows[0]||null});
  }catch{n(Object.assign(Error('No se pudo consultar el seguimiento GPS.'),{status:503}));}});
- router.ciclo=ciclo;router.procesar=procesar;return router;
+ router.preparar=preparar;router.ciclo=ciclo;router.procesar=procesar;return router;
 };
 module.exports.cercano=cercano;

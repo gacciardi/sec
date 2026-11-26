@@ -48,7 +48,9 @@ module.exports=db=>{
  router.use(require('./distribucion-fuentes-gps')(db));
  const cusat=crearCamionesCusatSEC(db);
  router.use(cusat);
- router.use(require('./distribucion-seguimiento-cusat')(db,cusat.consultarEmpresa));
+ const seguimiento=require('./distribucion-seguimiento-cusat')(db,cusat.consultarEmpresa);
+ router.use(seguimiento);
+ router.use(require('./distribucion-avisos-clientes')(db,seguimiento.preparar));
  return router;
 };
 
