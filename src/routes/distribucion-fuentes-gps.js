@@ -18,7 +18,7 @@ module.exports=function(db){const r=require('express').Router(),wrap=f=>(q,s,n)=
  const acceso=(q,s,n)=>!q.actor?.consulta_comercial&&['ADMIN','SUPERVISOR','OPERADOR'].includes(q.actor?.rol)?n():n(fail('Acceso restringido a Distribución.',403));
  r.get('/vehiculos/fuentes-gps',acceso,wrap(async(q,s)=>{await preparar(db);s.set('Cache-Control','no-store').json(await fuentes(db,q.actor.empresa_id));}));
  r.put('/vehiculos/:id/fuente-gps',acceso,wrap(async(q,s)=>{
-  if(!['ADMIN','SUPERVISOR'].includes(q.actor.rol))throw fail('Solo administración o supervisión puede elegir la fuente GPS.',403);
+  if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(q.actor.rol))throw fail('Solo oficina de Distribución puede elegir la fuente GPS.',403);
   if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(q.params.id)||!['CUSAT','CELULAR'].includes(q.body?.fuente)||!Number.isInteger(q.body.version)||q.body.version<0)throw fail('Seleccioná camión, fuente GPS y versión válida.');
   await preparar(db);const c=await db.connect();try{await c.query('BEGIN');
    const v=await c.query("SELECT id FROM distribucion.vehiculos WHERE id=$1 AND empresa_id=$2 AND tipo IN('camion','tractor') FOR UPDATE",[q.params.id,q.actor.empresa_id]);if(!v.rowCount)throw fail('Camión no disponible en esta empresa.',404);
