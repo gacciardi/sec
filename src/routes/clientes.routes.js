@@ -1827,10 +1827,8 @@ router.get(
           INNER JOIN modalidades_atencion ma
             ON ma.codigo = asig.modalidad
            AND ma.activo = true
-           AND (
-             ma.enviar_apk = true
-             OR c.es_ejecucion = true
-           )
+           -- Ejecución cambia la semana de visita, no la modalidad autorizada.
+           AND ma.enviar_apk = true
 
           LEFT JOIN rutas r
             ON r.id = asig.ruta_id
@@ -2396,10 +2394,8 @@ router.get(
             INNER JOIN modalidades_atencion ma
               ON ma.codigo = asig.modalidad
              AND ma.activo = true
-             AND (
-               ma.enviar_apk = true
-               OR c_apk.es_ejecucion = true
-             )
+             -- Ejecución no habilita Televentas en una ruta presencial.
+             AND ma.enviar_apk = true
 
             LEFT JOIN rutas r
               ON r.id = asig.ruta_id
