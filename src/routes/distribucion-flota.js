@@ -45,6 +45,7 @@ module.exports=db=>{
   if(!r.rowCount)throw fail('Vehículo no encontrado',404);res.status(201).json(r.rows[0]);
  }));
  router.use(require('./distribucion-lavados')(db));
+ router.use(require('./distribucion-fuentes-gps')(db));
  const cusat=crearCamionesCusatSEC(db);
  router.use(cusat);
  router.use(require('./distribucion-seguimiento-cusat')(db,cusat.consultarEmpresa));
