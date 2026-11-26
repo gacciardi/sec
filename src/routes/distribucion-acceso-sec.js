@@ -29,6 +29,7 @@ module.exports=function(db,{master,clave,verifica,hash}){
  router.use(require('./sec-usuarios-sectores-empresa')(db,actor));
  router.use(require('./sec-sectores-empresa')(db,actor));
  router.use(require('./sec-tarjetas')(db,actor));
+ router.use(require('./comercial-rutas-titular')(db,actor));
  router.actor=actor;
  router.permisos=permisos;
  router.consultaComercial=async q=>{const a=await actor(q);if(a.sectores.includes('DISTRIBUCION'))throw fail('Iniciá sesión en Distribución',401);if(!a.sectores.includes('COMERCIAL'))throw fail('Sin autorización para consultar informes de Comercial',403);if(!['ADMIN','SUPERVISOR','OPERADOR'].includes(a.rol))throw fail('Acceso restringido',403);const path=(q.path||q.url.split('?')[0]);const permitidos=['/me','/pedidos','/visitas','/repartos','/conductores','/rendicion/entregas','/rendicion/cobros','/rendicion/cierres-caja'];if(q.method!=='GET'||!permitidos.includes(path)&&!(path==='/estadisticas'&&['ADMIN','SUPERVISOR'].includes(a.rol)))throw fail('Comercial tiene acceso de consulta a Rendición y Estadísticas',403);const e=await db.query('SELECT id FROM distribucion.empresas WHERE codigo=$1 AND activo=true',[a.empresa]);if(e.rowCount!==1)throw fail('Esta empresa no tiene Distribución habilitada',404);return {...a,empresa_id:e.rows[0].id,consulta_comercial:true};};
