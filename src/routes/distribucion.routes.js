@@ -230,6 +230,8 @@ router.post('/importar-horarios',admin,upload.single('archivo'),wrap(async(req,r
  res.json({ok:true,clientes:new Set(cambios.map(x=>x.codigo)).size,horarios:cambios.length});
 }));
 
+router.use(require('./distribucion-corregir-importaciones')(db));
+
 router.post('/importar',operacion,upload.single('archivo'),wrap(async(req,res)=>{
 
  if(!req.file)throw error('Seleccionar Excel');
