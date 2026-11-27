@@ -603,7 +603,21 @@ router.get("/vendedores/:id", async (req, res) => {
         nombre,
         apellido,
         legajo,
-        UPPER(TRIM(rol)) AS rol
+        UPPER(TRIM(rol)) AS rol,
+        ARRAY(
+          SELECT r.nombre
+          FROM rutas r
+          LEFT JOIN LATERAL (
+            SELECT rr.vendedor_reemplazo_id
+            FROM reemplazos_ruta rr
+            WHERE rr.ruta_id=r.id AND rr.activo=true
+              AND CURRENT_DATE BETWEEN rr.fecha_desde AND rr.fecha_hasta
+            ORDER BY rr.created_at DESC LIMIT 1
+          ) reemplazo ON true
+          WHERE r.activo=true
+            AND COALESCE(reemplazo.vendedor_reemplazo_id,r.vendedor_id)=usuarios.id
+          ORDER BY r.nombre
+        ) AS rutas
       FROM usuarios
       WHERE id = $1
         AND deleted_at IS NULL
