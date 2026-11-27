@@ -5,6 +5,7 @@ test('MK del maestro se convierte en programa Ejecución y atención PR, conserv
  const f=normalizarFila(original);assert.equal(f.__ejecucion_mk,true);assert.equal(f.modalidad,'PR');assert.equal(f.codigo_cliente,'56324');assert.equal(f.ruta,'3');assert.equal(f.frecuencia,'JU');assert.equal(f.vendedor,'TAPIA LOURDES');assert.equal(original.ModalidadTipoatencion,'Mk');assert.equal(f.semana_ejecucion,undefined);
  for(const k of ['modalidad','Modalidad de atención','modalidad_de_atencion']){const f=normalizarFila({codigo_cliente:'0007',[k]:' mK '});assert.equal(f.__ejecucion_mk,true);assert.equal(f[k],'PR');assert.equal(f.codigo_cliente,'0007');}
  assert.equal(normalizarFila({modalidad:'TA'}).__ejecucion_mk,false);assert.equal(normalizarFila({modalidad:'MKT'}).__ejecucion_mk,false);
+ const canal=normalizarFila({Canal:'(2103)-KIOSCOS'});assert.equal(canal.Canal,'KIOSCOS');assert.equal(canal.canal,'KIOSCOS');assert.equal(normalizarFila({Canal:'(1102)-AUTOSERVICIOS'}).Canal,'AUTOSERVICIO');
 });
 test('la hoja se elige explícitamente y no se sustituye por la primera',()=>{
  const w={SheetNames:['Noviembre','16-11'],Sheets:{Noviembre:'completa','16-11':'novedades'}},X={utils:{sheet_to_json:s=>[{Codigo:s==='novedades'?56332:1,ModalidadTipoatencion:'Mk'}]}};

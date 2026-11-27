@@ -6,7 +6,7 @@ function frecuencia(v){if(v==null)return null;const original=String(v).trim(),n=
 function normalizarFila(f){
  const fila={...f};
  const alias={codigo_cliente:['codigo_cliente','Codigo'],nombre:['nombre','ClienteNombre'],direccion:['direccion'],localidad:['localidad'],vendedor:['vendedor','vendedor_nombre','nombre_vendedor','ModalidadVendedor'],ruta:['ruta','ModadalidadRutaVentaCodigo','ModalidadRutaVentaCodigo'],frecuencia:['frecuencia','ModadlidadFrecVenta','ModalidadFrecVenta'],canal:['canal']};
- for(const [campo,nombres]of Object.entries(alias)){const valor=leer(f,nombres);if(valor!==null)fila[campo]=campo==='codigo_cliente'||campo==='ruta'?codigo(valor):campo==='frecuencia'?frecuencia(valor):campo==='canal'?String(valor).replace(/^\s*\(\d+\)\s*-\s*/,'').trim():valor;}
+ for(const [campo,nombres]of Object.entries(alias)){const valor=leer(f,nombres);if(valor!==null){fila[campo]=campo==='codigo_cliente'||campo==='ruta'?codigo(valor):campo==='frecuencia'?frecuencia(valor):campo==='canal'?String(valor).replace(/^\s*\(\d+\)\s*-\s*/,'').trim():valor;if(campo==='canal'&&String(fila[campo]).toUpperCase()==='AUTOSERVICIOS')fila[campo]='AUTOSERVICIO';for(const k of Object.keys(f))if(nombres.some(n=>clave(n)===clave(k)))fila[k]=fila[campo];}}
  const modalidad=leer(f,['Modalidad de atencion','modalidad_de_atencion','modalidad','modo','tipo_modalidad','ModalidadTipoatencion']);
  fila.__ejecucion_mk=String(modalidad??'').trim().toUpperCase()==='MK';
  // MK is a program flag, not a new attention modality in clientes_asignaciones.
