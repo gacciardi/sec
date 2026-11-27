@@ -102,6 +102,7 @@ app.use("/auditoria", auditoriaRoutes);
 app.use("/reemplazos-ruta", reemplazosRutaRoutes);
 app.use("/fotos", fotosRoutes);
 app.use("/diagnostico-rutas", diagnosticoRutasRoutes);
+app.use(require("./routes/distribucion-seguimiento-cliente")(db).publicRouter);
 app.use("/distribucion", require("./routes/distribucion.routes"));
 const PORT = process.env.PORT || 7890;
 
