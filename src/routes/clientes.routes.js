@@ -1191,11 +1191,9 @@ router.get(
 
                 OR (
                   c.es_ejecucion = true
-                  AND c.semana_ejecucion IS NOT NULL
-                  AND c.semana_ejecucion =
-                    (
+                  AND (COALESCE((to_jsonb(c)->>'ejecucion_semanal')::boolean,false) OR c.semana_ejecucion = (
                       ((EXTRACT(DAY FROM p.fecha_consulta)::int - 1) / 7) + 1
-                    )
+                    ))
                 )
               )
 
@@ -1863,9 +1861,7 @@ router.get(
               c.es_ejecucion = false
               OR (
                 c.es_ejecucion = true
-                AND c.semana_ejecucion IS NOT NULL
-                AND c.semana_ejecucion =
-                  (((EXTRACT(DAY FROM par.fecha_consulta)::int - 1) / 7) + 1)
+                AND (COALESCE((to_jsonb(c)->>'ejecucion_semanal')::boolean,false) OR c.semana_ejecucion = (((EXTRACT(DAY FROM par.fecha_consulta)::int - 1) / 7) + 1))
               )
             )
 
@@ -2561,11 +2557,9 @@ router.get(
 
               OR (
                 c.es_ejecucion = true
-                AND c.semana_ejecucion IS NOT NULL
-                AND c.semana_ejecucion =
-                  (
+                AND (COALESCE((to_jsonb(c)->>'ejecucion_semanal')::boolean,false) OR c.semana_ejecucion = (
                     ((EXTRACT(DAY FROM CURRENT_DATE)::int - 1) / 7) + 1
-                  )
+                  ))
               )
             )
 
@@ -3249,6 +3243,7 @@ router.get(
                 AND activo = true
                 AND es_ejecucion = true
                 AND semana_ejecucion IS NULL
+                AND NOT COALESCE((to_jsonb(clientes)->>'ejecucion_semanal')::boolean,false)
             )::int
               AS ejecucion_sin_semana
 
@@ -3527,6 +3522,7 @@ router.get(
             c.es_ejecucion,
 
             c.semana_ejecucion,
+            COALESCE((to_jsonb(c)->>'ejecucion_semanal')::boolean,false) AS ejecucion_semanal,
 
             r.vendedor_id
               AS vendedor_ruta_id,
@@ -3634,6 +3630,7 @@ router.patch(
   "/ejecucion/masivo",
   async (req, res) => {
     try {
+      await require("../services/clientes-maestro-formato").prepararEjecucion(db);
       const {
         cliente_ids,
         codigos_cliente,
@@ -3722,6 +3719,7 @@ router.patch(
             SET
               es_ejecucion = $1,
               semana_ejecucion = $2,
+            ejecucion_semanal = false,
               updated_at = NOW()
 
             WHERE deleted_at IS NULL
@@ -3750,6 +3748,7 @@ router.patch(
             SET
               es_ejecucion = $1,
               semana_ejecucion = $2,
+            ejecucion_semanal = false,
               updated_at = NOW()
 
             WHERE deleted_at IS NULL
@@ -3861,6 +3860,7 @@ router.patch(
   "/:id/ejecucion",
   async (req, res) => {
     try {
+      await require("../services/clientes-maestro-formato").prepararEjecucion(db);
       const { id } =
         req.params;
 
@@ -3906,6 +3906,7 @@ router.patch(
           SET
             es_ejecucion = $1,
             semana_ejecucion = $2,
+            ejecucion_semanal = false,
             updated_at = NOW()
 
           WHERE id = $3
@@ -6011,3 +6012,4 @@ router.put(
 );
 
 module.exports = router;
+

@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const XLSX = require("xlsx");
 const fs = require("fs");
+const formatoMaestro=require("../services/clientes-maestro-formato");
 const pool = require("../config/database");
 const { AsyncLocalStorage } = require("node:async_hooks");
 const contextoImportacion = new AsyncLocalStorage();
@@ -913,6 +914,12 @@ IMPORTAR CLIENTES
 =================================
 */
 
+router.post('/hojas',upload.single('archivo'),async(req,res)=>{
+  try{if(!req.file)return res.status(400).json({error:'Seleccioná un Excel.'});const w=XLSX.readFile(req.file.path);const hojas=w.SheetNames.map(hoja=>{const {filas}=formatoMaestro.leerHoja(w,hoja,XLSX);return {nombre:hoja,filas:filas.length,clientes:new Set(filas.map(f=>f.codigo_cliente).filter(Boolean)).size,ejecucion_mk:[...new Set(filas.filter(f=>f.__ejecucion_mk).map(f=>f.codigo_cliente).filter(Boolean))]};});res.json({hojas});}
+  catch(e){res.status(400).json({error:'No se pudo leer el Excel. Revisá el archivo.'});}
+  finally{if(req.file?.path&&fs.existsSync(req.file.path))fs.unlinkSync(req.file.path);}
+});
+
 router.post(
   "/",
   upload.single("archivo"),
@@ -935,18 +942,14 @@ router.post(
           req.file.path
         );
 
-      const hoja =
-        workbook.Sheets[
-          workbook.SheetNames[0]
-        ];
-
-      const filas =
-        XLSX.utils.sheet_to_json(
-          hoja,
-          {
-            defval: null
-          }
-        );
+      let lectura;
+      try { lectura=formatoMaestro.leerHoja(workbook,req.body?.hoja,XLSX); }
+      catch(e){return res.status(400).json({error:e.message});}
+      const {hoja:hojaImportada,filas}=lectura;
+      // In a raw master, a physical assignment (including MK) owns the client card.
+      // Remote attention remains a separate assignment even if its row appeared first.
+      if(filas.some(f=>f.__ejecucion_mk))filas.sort((a,b)=>(a.modalidad==='PR'?0:1)-(b.modalidad==='PR'?0:1));
+      const idsEjecucionMK=new Set();
 
       if (filas.length === 0) {
         return res.status(400).json({
@@ -982,7 +985,7 @@ router.post(
       const camposModalidad = ["Modalidad de atencion", "Modalidad de atención", "modalidad_de_atencion", "modalidad_de_atención", "modalidad", "modo", "tipo_modalidad", "tipo modalidad"];
       const maestroHabitual = !filas.some(f => limpiarTexto(valorCampoMultiple(f, camposModalidad)));
       const filasRecibidas = filas.length;
-      const numerosOriginales = new Map(filas.map((f,i)=>[f,i+2]));
+      const numerosOriginales = new Map(filas.map((f,i)=>[f,f.__numero_fila_origen||i+2]));
       // Compatibilidad puntual con BACK REBESA anterior a la reestructuración
       // confirmada el 15/10/2026. Solo se activa con ambas señales del maestro viejo.
       const rutaDeFila = f => normalizarCodigo(valorCampo(f, "ruta"));
@@ -1808,6 +1811,8 @@ router.post(
             );
           }
 
+          if(fila.__ejecucion_mk && clienteIdProcesado)idsEjecucionMK.add(clienteIdProcesado);
+
           /*
           =============================
           GUARDAR ASIGNACIÓN COMERCIAL
@@ -1858,6 +1863,8 @@ router.post(
 
         }
       }
+
+      const ejecucionMK=await formatoMaestro.marcarEjecucion(db,[...idsEjecucionMK]);
 
       /*
       =================================
@@ -2092,7 +2099,7 @@ router.post(
       */
 
       if (
-        codigosImportados.length > 0 && omitidos === 0
+        codigosImportados.length > 0 && omitidos === 0 && req.body?.suspender_ausentes === "true"
       ) {
         const codigosUnicos = [
           ...new Set(
@@ -2223,8 +2230,10 @@ router.post(
       res.json({
         mensaje: omitidos > 0 ? "Importación finalizada con pendientes; se conservaron sus datos anteriores" : "Importación finalizada",
         maestroHabitual,
+        hojaImportada,
+        ejecucionMK,
         clientesPendientes: [...pendientes].map(([codigo_cliente,motivo])=>({codigo_cliente,motivo})),
-        suspensionDeAusentesOmitida: omitidos > 0,
+        suspensionDeAusentesOmitida: omitidos > 0 || req.body?.suspender_ausentes !== "true",
         reestructuracion: {aplicada: aplicarReestructuracion, filas_ruta_36_retiradas: filasRuta36Retiradas, filas_ruta_12_corregidas: filasRuta12Corregidas, cliente_baja: aplicarReestructuracion ? "55777" : null},
         asignacionesPrRetiradas,
         asignacionesTeleCreadas,

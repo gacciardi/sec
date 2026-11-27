@@ -102,14 +102,12 @@ router.get("/vendedores", async (req, res) => {
             COALESCE(c.es_ejecucion, false) = false
             OR (
               c.es_ejecucion = true
-              AND c.semana_ejecucion IS NOT NULL
-              AND c.semana_ejecucion =
-                LEAST(
+              AND (COALESCE((to_jsonb(c)->>'ejecucion_semanal')::boolean,false) OR c.semana_ejecucion = LEAST(
                   CEIL(
                     EXTRACT(DAY FROM CURRENT_DATE) / 7.0
                   )::int,
                   5
-                )
+                ))
             )
           )
 
@@ -370,14 +368,12 @@ router.get("/alertas-operativas", async (req, res) => {
             COALESCE(c.es_ejecucion, false) = false
             OR (
               c.es_ejecucion = true
-              AND c.semana_ejecucion IS NOT NULL
-              AND c.semana_ejecucion =
-                LEAST(
+              AND (COALESCE((to_jsonb(c)->>'ejecucion_semanal')::boolean,false) OR c.semana_ejecucion = LEAST(
                   CEIL(
                     EXTRACT(DAY FROM CURRENT_DATE) / 7.0
                   )::int,
                   5
-                )
+                ))
             )
           )
 
@@ -757,16 +753,14 @@ router.get("/vendedores/:id", async (req, res) => {
 
             OR (
               c.es_ejecucion = true
-              AND c.semana_ejecucion IS NOT NULL
-              AND c.semana_ejecucion =
-                LEAST(
+              AND (COALESCE((to_jsonb(c)->>'ejecucion_semanal')::boolean,false) OR c.semana_ejecucion = LEAST(
                   CEIL(
                     EXTRACT(
                       DAY FROM CURRENT_DATE
                     ) / 7.0
                   )::int,
                   5
-                )
+                ))
             )
           )
 
@@ -1066,3 +1060,4 @@ router.get("/vendedores/:id", async (req, res) => {
 });
 
 module.exports = router;
+
