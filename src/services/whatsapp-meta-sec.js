@@ -1,0 +1,17 @@
+'use strict';
+const https=require('node:https');
+const fail=(m,status=400)=>Object.assign(new Error(m),{status});
+const TEXTO='Hola. El camión de REBESA Coca Cola está cerca de tu comercio para entregar tu pedido de hoy. Por favor, preparate para recibirlo.\n\nAviso automático. Este número no atiende consultas. Para comunicarte, contactá a tu vendedor.';
+function telefono(s){const n=String(s||'').replace(/[\s()+.-]/g,'');if(!/^\d{10,15}$/.test(n))throw fail('Ingresá un teléfono válido con código de país.');return n;}
+function crear(env=process.env,transport=https.request){
+ async function graph(path,method='GET',body){
+  if(!env.WHATSAPP_ACCESS_TOKEN)throw fail('El acceso de WhatsApp todavía no está configurado.',503);
+  const payload=body?JSON.stringify(body):null;
+  return new Promise((resolve,reject)=>{const req=transport({hostname:'graph.facebook.com',path:'/v23.0/'+path,method,headers:{Authorization:'Bearer '+env.WHATSAPP_ACCESS_TOKEN,...(payload?{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)}:{})}},res=>{let data='',bytes=0;res.on('data',b=>{bytes+=b.length;if(bytes>1024*1024){res.destroy();reject(fail('Respuesta de Meta demasiado grande.',502));}else data+=b;});res.on('error',()=>reject(fail('No se pudo completar la consulta a Meta.',502)));res.on('end',()=>{let d;try{d=JSON.parse(data);}catch{return reject(fail('Meta devolvió una respuesta inválida.',502));}if(res.statusCode<200||res.statusCode>=300||d.error)return reject(fail('Meta no autorizó la operación. Revisá el acceso, los permisos y la aprobación del mensaje. Código '+Number(d.error?.code||res.statusCode)+'.',502));resolve(d);});});req.setTimeout(15000,()=>req.destroy());req.on('error',()=>reject(fail('No se pudo confirmar la respuesta de Meta. No repitas un envío sin revisar su registro.',502)));if(payload)req.write(payload);req.end();});
+ }
+ async function plantilla(id){if(!/^\d+$/.test(id))throw fail('Plantilla inválida.');const d=await graph(id+'?fields=id,name,status,language,components');return {id:d.id,nombre:d.name,estado:d.status,idioma:d.language,texto:d.components?.find(c=>c.type==='BODY')?.text||'',pie:d.components?.find(c=>c.type==='FOOTER')?.text||''};}
+ async function numero(){const waba=env.WHATSAPP_WABA_ID||'4451712535077493';if(!/^\d+$/.test(waba))throw fail('Cuenta de WhatsApp inválida.');const d=await graph(waba+'/phone_numbers?fields=id,display_phone_number,verified_name&limit=100');const n=d.data?.find(n=>['5491169202701','54111569202701','541169202701'].includes(String(n.display_phone_number).replace(/\D/g,'')));if(!n)throw fail('No se encontró el número de SEC en la cuenta de WhatsApp configurada.',409);return {id:n.id,telefono:n.display_phone_number,nombre:n.verified_name};}
+ async function enviar(to,p){if(p.estado!=='APPROVED')throw fail('Meta todavía no aprobó esta versión del mensaje.',409);const n=await numero(),destino=telefono(to);if(['5491169202701','54111569202701','541169202701'].includes(destino))throw fail('La prueba debe enviarse a otro teléfono.');const d=await graph(n.id+'/messages','POST',{messaging_product:'whatsapp',recipient_type:'individual',to:destino,type:'template',template:{name:p.nombre,language:{code:p.idioma}}});if(!d.messages?.[0]?.id)throw fail('Meta no confirmó la aceptación del mensaje.',502);return d.messages[0].id;}
+ return {graph,plantilla,numero,enviar};
+}
+module.exports={crear,telefono,TEXTO,fail};
