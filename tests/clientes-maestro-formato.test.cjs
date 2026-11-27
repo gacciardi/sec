@@ -1,5 +1,5 @@
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const {normalizarFila,leerHoja,marcarEjecucion}=require('../src/services/clientes-maestro-formato');
+const {normalizarFila,leerHoja,marcarEjecucion,asegurarCanalesMaestro}=require('../src/services/clientes-maestro-formato');
 test('MK del maestro se convierte en programa Ejecución y atención PR, conservando día y ruta',()=>{
  const original={Codigo:56324,ClienteNombre:'VITA MARKET',ModalidadVendedor:'TAPIA LOURDES',ModadalidadRutaVentaCodigo:3,ModadlidadFrecVenta:'4-Jueves',ModalidadTipoatencion:'Mk',Canal:'(1102)-AUTOSERVICIOS'};
  const f=normalizarFila(original);assert.equal(f.__ejecucion_mk,true);assert.equal(f.modalidad,'PR');assert.equal(f.codigo_cliente,'56324');assert.equal(f.ruta,'3');assert.equal(f.frecuencia,'JU');assert.equal(f.vendedor,'TAPIA LOURDES');assert.equal(original.ModalidadTipoatencion,'Mk');assert.equal(f.semana_ejecucion,undefined);
@@ -15,4 +15,8 @@ test('marca cada MK una sola vez como ejecución semanal y no toca otros cliente
  let cambios=0,ddl=0;const db={query:async(sql,a)=>{if(sql.startsWith('ALTER')){ddl++;return {rows:[]};}cambios++;assert(sql.includes('ejecucion_semanal=true'));assert(sql.includes('semana_ejecucion=NULL'));assert.deepEqual(a,[['id1','id2']]);return {rows:[{id:'id1'},{id:'id2'}]};}};
  assert.deepEqual(await marcarEjecucion(db,['id1','id1','id2']),{clientes:2,marcados:2,semanales:2});assert.equal(cambios,1);assert.equal(ddl,1);
  assert.deepEqual(await marcarEjecucion(db,[]),{clientes:0,marcados:0,semanales:0});assert.equal(cambios,1);assert.equal(ddl,1);
+});
+test('solo da de alta los dos canales autorizados, sin duplicarlos ni crear otras categorías',async()=>{
+ let n=0;const db={query:async(sql,args)=>{n++;assert.deepEqual(args,[['HELADERIAS','MAXIKIOSCOS']]);assert(sql.includes('NOT EXISTS'));assert(sql.includes('ON CONFLICT(nombre) DO NOTHING'));assert(sql.includes('c.permanencia_minima'));return {rows:[{nombre:'HELADERIAS'},{nombre:'MAXIKIOSCOS'}]};}};
+ assert.deepEqual(await asegurarCanalesMaestro(db,[{canal:'HELADERIAS'},{canal:'MAXIKIOSCOS'},{canal:'HELADERIAS'},{canal:'OTRO NO AUTORIZADO'}]),['HELADERIAS','MAXIKIOSCOS']);assert.deepEqual(await asegurarCanalesMaestro(db,[{canal:'OTRO NO AUTORIZADO'}]),[]);assert.equal(n,1);
 });

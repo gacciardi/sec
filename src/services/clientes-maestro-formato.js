@@ -20,10 +20,22 @@ function leerHoja(workbook,hojaSolicitada,XLSX){
  return {hoja,filas:XLSX.utils.sheet_to_json(workbook.Sheets[hoja],{defval:null,raw:false}).map((f,i)=>({...normalizarFila(f),__numero_fila_origen:i+2}))};
 }
 async function prepararEjecucion(db){await db.query('ALTER TABLE clientes ADD COLUMN IF NOT EXISTS ejecucion_semanal boolean NOT NULL DEFAULT false');}
+async function asegurarCanalesMaestro(db,filas){
+ const nombres=[...new Set(filas.map(f=>String(f.canal||'').trim().toUpperCase()).filter(n=>['MAXIKIOSCOS','HELADERIAS'].includes(n)))];
+ if(!nombres.length)return [];
+ // Canales aprobados para el maestro de REBESA. Se hereda la permanencia
+ // de Kioscos y Almacenes, respectivamente, sin inventar otras categorías.
+ const d=await db.query(`INSERT INTO canales(nombre,permanencia_minima)
+ SELECT nuevos.nombre,COALESCE((SELECT c.permanencia_minima FROM canales c WHERE upper(trim(c.nombre))=nuevos.base AND c.deleted_at IS NULL ORDER BY c.created_at LIMIT 1),5)
+ FROM (VALUES ('MAXIKIOSCOS','KIOSCOS'),('HELADERIAS','ALMACENES')) nuevos(nombre,base)
+ WHERE nuevos.nombre=ANY($1::text[]) AND NOT EXISTS(SELECT 1 FROM canales c WHERE upper(trim(c.nombre))=nuevos.nombre AND c.deleted_at IS NULL)
+ ON CONFLICT(nombre) DO NOTHING RETURNING nombre`,[nombres]);
+ return d.rows.map(c=>c.nombre);
+}
 async function marcarEjecucion(db,ids){
  const unicos=[...new Set(ids)];if(!unicos.length)return {clientes:0,marcados:0,semanales:0};
  await prepararEjecucion(db);
  const d=await db.query(`UPDATE clientes SET es_ejecucion=true,ejecucion_semanal=true,semana_ejecucion=NULL,updated_at=CASE WHEN es_ejecucion IS DISTINCT FROM true OR ejecucion_semanal IS DISTINCT FROM true OR semana_ejecucion IS NOT NULL THEN now() ELSE updated_at END WHERE id=ANY($1::uuid[]) AND deleted_at IS NULL RETURNING id`,[unicos]);
  return {clientes:unicos.length,marcados:d.rows.length,semanales:d.rows.length};
 }
-module.exports={normalizarFila,leerHoja,marcarEjecucion,prepararEjecucion,frecuencia};
+module.exports={normalizarFila,leerHoja,marcarEjecucion,prepararEjecucion,asegurarCanalesMaestro,frecuencia};

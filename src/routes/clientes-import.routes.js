@@ -979,6 +979,7 @@ router.post(
         });
       }
 
+      const canalesNuevos = await formatoMaestro.asegurarCanalesMaestro(db,filas);
       const vendedores =
         await cargarVendedores();
 
@@ -2231,6 +2232,7 @@ router.post(
         mensaje: omitidos > 0 ? "Importación finalizada con pendientes; se conservaron sus datos anteriores" : "Importación finalizada",
         maestroHabitual,
         hojaImportada,
+        canalesNuevos,
         ejecucionMK,
         clientesPendientes: [...pendientes].map(([codigo_cliente,motivo])=>({codigo_cliente,motivo})),
         suspensionDeAusentesOmitida: omitidos > 0 || req.body?.suspender_ausentes !== "true",
